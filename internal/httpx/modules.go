@@ -19,6 +19,7 @@ import (
 	s3platform "megaapp-back/internal/platform/s3"
 	"megaapp-back/internal/quotes"
 	"megaapp-back/internal/settings"
+	"megaapp-back/internal/timetrack"
 	"megaapp-back/internal/ws"
 )
 
@@ -40,6 +41,11 @@ type wsModule struct {
 type moneyModule struct {
 	service *money.Service
 	handler *money.Handler
+}
+
+type timetrackModule struct {
+	service *timetrack.Service
+	handler *timetrack.Handler
 }
 
 type quotesModule struct {
@@ -93,6 +99,12 @@ func buildMoneyModule(db *sql.DB) moneyModule {
 	repo := money.NewRepository(db)
 	service := money.NewService(repo)
 	return moneyModule{service: service, handler: money.NewHandler(service)}
+}
+
+func buildTimetrackModule(db *sql.DB) timetrackModule {
+	repo := timetrack.NewRepository(db)
+	service := timetrack.NewService(repo)
+	return timetrackModule{service: service, handler: timetrack.NewHandler(service)}
 }
 
 func buildQuotesModule(db *sql.DB, cfg config.Config, logger *slog.Logger, clk clockplatform.Clock, runtime *jobs.Runtime) (quotesModule, error) {

@@ -24,7 +24,7 @@ func TestGetCreatesDefaultsAndReturnsUserMetadata(t *testing.T) {
 	if !result.IsUserAdmin {
 		t.Fatal("IsUserAdmin = false, want true")
 	}
-	if result.DarkTheme || result.SelectedChapterFood || result.SelectedChapterMoney || result.LiteVersion {
+	if result.DarkTheme || result.SelectedChapterFood || result.SelectedChapterMoney || result.SelectedChapterTime || result.LiteVersion {
 		t.Fatal("default boolean settings should be false")
 	}
 	if result.Height != nil {
@@ -37,6 +37,27 @@ func TestGetCreatesDefaultsAndReturnsUserMetadata(t *testing.T) {
 	}
 	if stored == nil {
 		t.Fatal("stored settings = nil, want row")
+	}
+}
+
+func TestGetHandlesPreExistingRowWithNullSelectedChapterTime(t *testing.T) {
+	db := openSettingsTestDB(t)
+	service := NewService(NewRepository(db))
+	userID := insertSettingsTestUser(t, db, "alice", false)
+
+	if _, err := db.Exec(`
+		INSERT INTO settings (usersId, darkTheme, selectedChapterFood, selectedChapterMoney, liteVersion, height)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, userID, true, false, false, false, nil); err != nil {
+		t.Fatalf("Exec() error = %v", err)
+	}
+
+	result, err := service.Get(context.Background(), userID, "alice")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if result.SelectedChapterTime {
+		t.Fatal("SelectedChapterTime = true, want false for NULL column")
 	}
 }
 
@@ -63,6 +84,29 @@ func TestPutUpdatesSingleSetting(t *testing.T) {
 	}
 }
 
+func TestPutUpdatesSelectedChapterTime(t *testing.T) {
+	db := openSettingsTestDB(t)
+	service := NewService(NewRepository(db))
+	userID := insertSettingsTestUser(t, db, "alice", false)
+
+	input, err := ParseUpdateInput(map[string]any{"selectedChapterTime": true})
+	if err != nil {
+		t.Fatalf("ParseUpdateInput() error = %v", err)
+	}
+
+	if err := service.Put(context.Background(), userID, input); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+
+	result, err := service.Get(context.Background(), userID, "alice")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !result.SelectedChapterTime {
+		t.Fatal("SelectedChapterTime = false, want true")
+	}
+}
+
 func TestPutRejectsInvalidField(t *testing.T) {
 	db := openSettingsTestDB(t)
 	_ = insertSettingsTestUser(t, db, "alice", false)
@@ -83,6 +127,7 @@ func TestPostUpsertsSettings(t *testing.T) {
 		DarkTheme:            true,
 		SelectedChapterFood:  true,
 		SelectedChapterMoney: false,
+		SelectedChapterTime:  true,
 		LiteVersion:          true,
 		Height:               &height,
 	}); err != nil {
@@ -93,7 +138,7 @@ func TestPostUpsertsSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	if !result.DarkTheme || !result.SelectedChapterFood || !result.LiteVersion {
+	if !result.DarkTheme || !result.SelectedChapterFood || !result.SelectedChapterTime || !result.LiteVersion {
 		t.Fatal("stored settings mismatch")
 	}
 	if result.Height == nil || *result.Height != 185 {
@@ -169,6 +214,7 @@ func openSettingsTestDB(t *testing.T) *sql.DB {
 			darkTheme BOOLEAN,
 			selectedChapterFood BOOLEAN,
 			selectedChapterMoney BOOLEAN,
+			selectedChapterTime BOOLEAN,
 			liteVersion BOOLEAN,
 			height INTEGER,
 			sex TEXT DEFAULT NULL,

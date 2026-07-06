@@ -118,6 +118,43 @@ func TestMoneyRoutesSnapshotAndReferenceCrud(t *testing.T) {
 	assertMoneyStatus(t, http.MethodDelete, server.URL+"/api/money/accounts/2", tokens.AccessToken, nil, http.StatusOK)
 }
 
+func TestMoneyRoutesEmptyListsAreNotNull(t *testing.T) {
+	db := openMoneyTestDB(t)
+	insertMoneyTestUser(t, db, 1, "alice")
+
+	authRepo := auth.NewRepository(db)
+	tokenManager := auth.NewTokenManager("test-secret", time.Hour, 24*time.Hour)
+	authService := auth.NewService(authRepo, tokenManager)
+	handler := NewHandler(NewService(NewRepository(db)))
+
+	router := chi.NewRouter()
+	RegisterRoutes(router, authService, handler)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	tokens, err := tokenManager.Issue(auth.TokenClaims{UserID: 1, Username: "alice"})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+
+	assertMoneyEmptyListData(t, assertMoneyJSON(t, http.MethodGet, server.URL+"/api/money/organizations", tokens.AccessToken, nil, http.StatusOK))
+	assertMoneyEmptyListData(t, assertMoneyJSON(t, http.MethodGet, server.URL+"/api/money/currencies", tokens.AccessToken, nil, http.StatusOK))
+	assertMoneyEmptyListData(t, assertMoneyJSON(t, http.MethodGet, server.URL+"/api/money/categories", tokens.AccessToken, nil, http.StatusOK))
+	assertMoneyEmptyListData(t, assertMoneyJSON(t, http.MethodGet, server.URL+"/api/money/accounts", tokens.AccessToken, nil, http.StatusOK))
+	assertMoneyEmptyListData(t, assertMoneyJSON(t, http.MethodGet, server.URL+"/api/money/assets", tokens.AccessToken, nil, http.StatusOK))
+	assertMoneyEmptyListData(t, assertMoneyJSON(t, http.MethodGet, server.URL+"/api/money/transactions", tokens.AccessToken, nil, http.StatusOK))
+	assertMoneyEmptyListData(t, assertMoneyJSON(t, http.MethodGet, server.URL+"/api/money/trades", tokens.AccessToken, nil, http.StatusOK))
+	assertMoneyEmptyListData(t, assertMoneyJSON(t, http.MethodGet, server.URL+"/api/money/rate-history", tokens.AccessToken, nil, http.StatusOK))
+
+	snapshotResponse := assertMoneyJSON(t, http.MethodGet, server.URL+"/api/money/snapshot", tokens.AccessToken, nil, http.StatusOK)
+	snapshotData := mustMoneyDataMap(t, snapshotResponse)
+	for _, field := range []string{"currencies", "categories", "organizations", "accounts", "assets", "investAssetTrades", "transactions", "rateHistory"} {
+		if _, ok := snapshotData[field].([]any); !ok {
+			t.Fatalf(`snapshot[%q] = %#v (%T), want empty []any, not null`, field, snapshotData[field], snapshotData[field])
+		}
+	}
+}
+
 func TestMoneyRoutesTransactionsCrud(t *testing.T) {
 	db := openMoneyTestDB(t)
 	insertMoneyTestUser(t, db, 1, "alice")
@@ -374,6 +411,15 @@ func TestMoneyRoutesTradesAndRateHistory(t *testing.T) {
 	firstSnapshotRateHistory := snapshotRateHistory[0].(map[string]any)
 	if _, ok := firstSnapshotRateHistory["ratesJson"].(map[string]any); !ok {
 		t.Fatalf("snapshot ratesJson type = %T, want object", firstSnapshotRateHistory["ratesJson"])
+	}
+}
+
+// assertMoneyEmptyListData catches nil-slice-marshals-to-JSON-null regressions:
+// the frontend spreads/iterates `data` directly, so an empty list must be `[]`, never `null`.
+func assertMoneyEmptyListData(t *testing.T, payload map[string]any) {
+	t.Helper()
+	if _, ok := payload["data"].([]any); !ok {
+		t.Fatalf(`payload["data"] = %#v (%T), want empty []any, not null`, payload["data"], payload["data"])
 	}
 }
 

@@ -18,6 +18,7 @@ const (
 	UpdateFieldDarkTheme            UpdateField = "darkTheme"
 	UpdateFieldSelectedChapterFood  UpdateField = "selectedChapterFood"
 	UpdateFieldSelectedChapterMoney UpdateField = "selectedChapterMoney"
+	UpdateFieldSelectedChapterTime  UpdateField = "selectedChapterTime"
 	UpdateFieldLiteVersion          UpdateField = "liteVersion"
 	UpdateFieldHeight               UpdateField = "height"
 )
@@ -59,6 +60,7 @@ func (s *Service) Get(ctx context.Context, userID int64, fallbackUserName string
 	return UserSettings{
 		SelectedChapterFood:  stored.SelectedChapterFood,
 		SelectedChapterMoney: stored.SelectedChapterMoney,
+		SelectedChapterTime:  stored.SelectedChapterTime,
 		DarkTheme:            stored.DarkTheme,
 		LiteVersion:          stored.LiteVersion,
 		Height:               stored.Height,
@@ -92,6 +94,11 @@ func (s *Service) Put(ctx context.Context, userID int64, input UpdateInput) erro
 			return fmt.Errorf("invalid selectedChapterMoney value")
 		}
 		stored.SelectedChapterMoney = *input.BoolValue
+	case UpdateFieldSelectedChapterTime:
+		if input.BoolValue == nil {
+			return fmt.Errorf("invalid selectedChapterTime value")
+		}
+		stored.SelectedChapterTime = *input.BoolValue
 	case UpdateFieldLiteVersion:
 		if input.BoolValue == nil {
 			return fmt.Errorf("invalid liteVersion value")
@@ -110,6 +117,7 @@ func (s *Service) Post(ctx context.Context, userID int64, request UserSettings) 
 	return s.repo.Upsert(ctx, userID, StoredSettings{
 		SelectedChapterFood:  request.SelectedChapterFood,
 		SelectedChapterMoney: request.SelectedChapterMoney,
+		SelectedChapterTime:  request.SelectedChapterTime,
 		DarkTheme:            request.DarkTheme,
 		LiteVersion:          request.LiteVersion,
 		Height:               request.Height,
@@ -143,7 +151,7 @@ func ParseUpdateInput(payload map[string]any) (UpdateInput, error) {
 
 	for key, value := range payload {
 		switch key {
-		case string(UpdateFieldDarkTheme), string(UpdateFieldSelectedChapterFood), string(UpdateFieldSelectedChapterMoney), string(UpdateFieldLiteVersion):
+		case string(UpdateFieldDarkTheme), string(UpdateFieldSelectedChapterFood), string(UpdateFieldSelectedChapterMoney), string(UpdateFieldSelectedChapterTime), string(UpdateFieldLiteVersion):
 			parsed, ok := value.(bool)
 			if !ok {
 				return UpdateInput{}, fmt.Errorf("invalid %s value", key)

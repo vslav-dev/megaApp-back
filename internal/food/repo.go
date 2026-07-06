@@ -117,7 +117,7 @@ func (r *Repository) GetCatalogue(ctx context.Context) ([]CatalogueRow, error) {
 	}
 	defer rows.Close()
 
-	var result []CatalogueRow
+	result := make([]CatalogueRow, 0)
 	for rows.Next() {
 		var row CatalogueRow
 		if err := rows.Scan(&row.ID, &row.Name, &row.Kcals, &row.Protein, &row.Fat, &row.Carbs, &row.Fiber, &row.Description, &row.LegacyName); err != nil {
@@ -216,7 +216,7 @@ func (r *Repository) GetAllUserIDs(ctx context.Context) ([]int64, error) {
 }
 
 func scanDiaryRows(rows *sql.Rows) ([]DiaryRow, error) {
-	var result []DiaryRow
+	result := make([]DiaryRow, 0)
 	for rows.Next() {
 		var row DiaryRow
 		if err := rows.Scan(&row.ID, &row.DateISO, &row.FoodCatalogueID, &row.FoodWeight, &row.History); err != nil {
@@ -231,7 +231,7 @@ func scanDiaryRows(rows *sql.Rows) ([]DiaryRow, error) {
 }
 
 func scanWeightRows(rows *sql.Rows) ([]WeightRow, error) {
-	var result []WeightRow
+	result := make([]WeightRow, 0)
 	for rows.Next() {
 		var row WeightRow
 		if err := rows.Scan(&row.DateISO, &row.Weight); err != nil {
@@ -257,7 +257,7 @@ func (r *Repository) GetStatsDiaryHistory(ctx context.Context, userID int64, sta
 	}
 	defer rows.Close()
 
-	var result []StatsDiaryRow
+	result := make([]StatsDiaryRow, 0)
 	for rows.Next() {
 		var row StatsDiaryRow
 		if err := rows.Scan(&row.DateISO, &row.FoodWeight, &row.FoodCatalogueID); err != nil {

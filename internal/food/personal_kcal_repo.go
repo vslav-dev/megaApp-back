@@ -28,7 +28,7 @@ func (r *Repository) GetPersonalKcalHistory(ctx context.Context, userID int64) (
 	}
 	defer rows.Close()
 
-	var result []PersonalKcalHistoryRow
+	result := make([]PersonalKcalHistoryRow, 0)
 	for rows.Next() {
 		var row PersonalKcalHistoryRow
 		if err := rows.Scan(&row.FoodCatalogueID, &row.YearMonth, &row.KcalsPer100g); err != nil {
@@ -53,7 +53,7 @@ func (r *Repository) GetPersonalNormHistory(ctx context.Context, userID int64) (
 	}
 	defer rows.Close()
 
-	var result []PersonalNormHistoryRow
+	result := make([]PersonalNormHistoryRow, 0)
 	for rows.Next() {
 		var row PersonalNormHistoryRow
 		if err := rows.Scan(&row.YearMonth, &row.NormKcals, &row.KcalPerKg); err != nil {

@@ -10,6 +10,7 @@ import (
 type UserSettings struct {
 	SelectedChapterFood  bool   `json:"selectedChapterFood"`
 	SelectedChapterMoney bool   `json:"selectedChapterMoney"`
+	SelectedChapterTime  bool   `json:"selectedChapterTime"`
 	DarkTheme            bool   `json:"darkTheme"`
 	LiteVersion          bool   `json:"liteVersion"`
 	Height               *int64 `json:"height"`
@@ -20,6 +21,7 @@ type UserSettings struct {
 type StoredSettings struct {
 	SelectedChapterFood  bool
 	SelectedChapterMoney bool
+	SelectedChapterTime  bool
 	DarkTheme            bool
 	LiteVersion          bool
 	Height               *int64
@@ -35,7 +37,7 @@ func NewRepository(db *sql.DB) *Repository {
 
 func (r *Repository) GetByUserID(ctx context.Context, userID int64) (*StoredSettings, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT darkTheme, selectedChapterFood, selectedChapterMoney, liteVersion, height
+		SELECT darkTheme, selectedChapterFood, selectedChapterMoney, COALESCE(selectedChapterTime, 0), liteVersion, height
 		FROM settings
 		WHERE usersId = ?
 	`, userID)
@@ -43,10 +45,11 @@ func (r *Repository) GetByUserID(ctx context.Context, userID int64) (*StoredSett
 	var darkTheme bool
 	var selectedChapterFood bool
 	var selectedChapterMoney bool
+	var selectedChapterTime bool
 	var liteVersion bool
 	var height sql.NullInt64
 
-	if err := row.Scan(&darkTheme, &selectedChapterFood, &selectedChapterMoney, &liteVersion, &height); err != nil {
+	if err := row.Scan(&darkTheme, &selectedChapterFood, &selectedChapterMoney, &selectedChapterTime, &liteVersion, &height); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -57,6 +60,7 @@ func (r *Repository) GetByUserID(ctx context.Context, userID int64) (*StoredSett
 		DarkTheme:            darkTheme,
 		SelectedChapterFood:  selectedChapterFood,
 		SelectedChapterMoney: selectedChapterMoney,
+		SelectedChapterTime:  selectedChapterTime,
 		LiteVersion:          liteVersion,
 		Height:               nullableInt64Ptr(height),
 	}, nil
@@ -65,9 +69,9 @@ func (r *Repository) GetByUserID(ctx context.Context, userID int64) (*StoredSett
 func (r *Repository) Upsert(ctx context.Context, userID int64, settings StoredSettings) error {
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE settings
-		SET darkTheme = ?, selectedChapterFood = ?, selectedChapterMoney = ?, liteVersion = ?, height = ?
+		SET darkTheme = ?, selectedChapterFood = ?, selectedChapterMoney = ?, selectedChapterTime = ?, liteVersion = ?, height = ?
 		WHERE usersId = ?
-	`, settings.DarkTheme, settings.SelectedChapterFood, settings.SelectedChapterMoney, settings.LiteVersion, settings.Height, userID)
+	`, settings.DarkTheme, settings.SelectedChapterFood, settings.SelectedChapterMoney, settings.SelectedChapterTime, settings.LiteVersion, settings.Height, userID)
 	if err != nil {
 		return fmt.Errorf("update settings: %w", err)
 	}
@@ -81,9 +85,9 @@ func (r *Repository) Upsert(ctx context.Context, userID int64, settings StoredSe
 	}
 
 	if _, err := r.db.ExecContext(ctx, `
-		INSERT INTO settings (usersId, darkTheme, selectedChapterFood, selectedChapterMoney, liteVersion, height)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, userID, settings.DarkTheme, settings.SelectedChapterFood, settings.SelectedChapterMoney, settings.LiteVersion, settings.Height); err != nil {
+		INSERT INTO settings (usersId, darkTheme, selectedChapterFood, selectedChapterMoney, selectedChapterTime, liteVersion, height)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, userID, settings.DarkTheme, settings.SelectedChapterFood, settings.SelectedChapterMoney, settings.SelectedChapterTime, settings.LiteVersion, settings.Height); err != nil {
 		return fmt.Errorf("insert settings: %w", err)
 	}
 

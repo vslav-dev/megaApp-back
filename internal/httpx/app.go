@@ -19,6 +19,7 @@ import (
 	sqliteplatform "megaapp-back/internal/platform/sqlite"
 	"megaapp-back/internal/quotes"
 	"megaapp-back/internal/settings"
+	"megaapp-back/internal/timetrack"
 	"megaapp-back/internal/ws"
 
 	"github.com/go-chi/chi/v5"
@@ -58,6 +59,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger, clk clo
 	authModule := buildAuthModule(db.SQL(), cfg)
 	settingsModule := buildSettingsModule(db.SQL())
 	moneyModule := buildMoneyModule(db.SQL())
+	timetrackModule := buildTimetrackModule(db.SQL())
 	wsModule := buildWSModule(cfg, authModule.service)
 	metricsModule, err := buildMetricsModule(cfg, logger, wsModule.hub, authModule.service, clk, jobRuntime)
 	if err != nil {
@@ -123,6 +125,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger, clk clo
 	auth.RegisterRoutes(router, authModule.handler)
 	settings.RegisterRoutes(router, authModule.service, settingsModule.handler)
 	money.RegisterRoutes(router, authModule.service, moneyModule.handler)
+	timetrack.RegisterRoutes(router, authModule.service, timetrackModule.handler)
 	food.RegisterRoutes(router, authModule.service, foodModule.readHandler)
 	food.RegisterWriteRoutes(router, authModule.service, foodModule.writeHandler)
 	food.RegisterCatalogueRoutes(router, authModule.service, foodModule.catalogueHandler)

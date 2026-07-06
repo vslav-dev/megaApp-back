@@ -36,6 +36,7 @@ func TestSettingsEndpoints(t *testing.T) {
 			darkTheme BOOLEAN,
 			selectedChapterFood BOOLEAN,
 			selectedChapterMoney BOOLEAN,
+			selectedChapterTime BOOLEAN,
 			liteVersion BOOLEAN,
 			height INTEGER,
 			sex TEXT DEFAULT NULL,

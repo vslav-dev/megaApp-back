@@ -34,7 +34,7 @@ func (r *Repository) ListOrganizations(ctx context.Context, userID int64) ([]Org
 	}
 	defer rows.Close()
 
-	var result []Organization
+	result := make([]Organization, 0)
 	for rows.Next() {
 		var item Organization
 		var logo sql.NullString
@@ -131,7 +131,7 @@ func (r *Repository) ListCurrencies(ctx context.Context, userID int64) ([]Curren
 	}
 	defer rows.Close()
 
-	var result []Currency
+	result := make([]Currency, 0)
 	for rows.Next() {
 		var item Currency
 		var whitespace int64
@@ -228,7 +228,7 @@ func (r *Repository) ListCategories(ctx context.Context, userID int64) ([]Catego
 	}
 	defer rows.Close()
 
-	var result []Category
+	result := make([]Category, 0)
 	for rows.Next() {
 		var item Category
 		var parentID sql.NullInt64
@@ -337,7 +337,7 @@ func (r *Repository) ListAccounts(ctx context.Context, userID int64) ([]Account,
 	}
 	defer rows.Close()
 
-	var result []Account
+	result := make([]Account, 0)
 	for rows.Next() {
 		var item Account
 		var isInvest int64
@@ -454,7 +454,7 @@ func (r *Repository) ListAssets(ctx context.Context, userID int64) ([]Asset, err
 	}
 	defer rows.Close()
 
-	var result []Asset
+	result := make([]Asset, 0)
 	for rows.Next() {
 		item, err := scanAsset(rows)
 		if err != nil {
@@ -515,7 +515,7 @@ func (r *Repository) ListLinkedTransactionAccountIDsByAsset(ctx context.Context,
 	}
 	defer rows.Close()
 
-	var result []int64
+	result := make([]int64, 0)
 	for rows.Next() {
 		var accountID int64
 		if err := rows.Scan(&accountID); err != nil {
@@ -579,7 +579,7 @@ func (r *Repository) ListTransactions(ctx context.Context, userID int64) ([]Tran
 	}
 	defer rows.Close()
 
-	var result []Transaction
+	result := make([]Transaction, 0)
 	for rows.Next() {
 		item, err := scanTransaction(rows)
 		if err != nil {
@@ -737,7 +737,7 @@ func (r *Repository) ListInvestAssetTrades(ctx context.Context, userID int64) ([
 	}
 	defer rows.Close()
 
-	var result []InvestAssetTrade
+	result := make([]InvestAssetTrade, 0)
 	for rows.Next() {
 		var item InvestAssetTrade
 		var notes sql.NullString
@@ -774,7 +774,7 @@ func (r *Repository) ListRateHistory(ctx context.Context) ([]RateHistory, error)
 	}
 	defer rows.Close()
 
-	var result []RateHistory
+	result := make([]RateHistory, 0)
 	for rows.Next() {
 		var item RateHistory
 		if err := rows.Scan(&item.ID, &item.DateISO, &item.RatesJSON); err != nil {
