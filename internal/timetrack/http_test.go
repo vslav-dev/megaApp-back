@@ -33,57 +33,100 @@ func TestTimetrackRoutesCrud(t *testing.T) {
 		t.Fatalf("Issue() error = %v", err)
 	}
 
-	assertTimetrackEmptyListData(t, assertTimetrackJSON(t, http.MethodGet, server.URL+"/api/time/activities", tokens.AccessToken, nil, http.StatusOK))
-	assertTimetrackEmptyListData(t, assertTimetrackJSON(t, http.MethodGet, server.URL+"/api/time/categories", tokens.AccessToken, nil, http.StatusOK))
+	catalog := assertTimetrackJSON(t, http.MethodGet, server.URL+"/api/time/catalog", tokens.AccessToken, nil, http.StatusOK)
+	assertTimetrackEmptyCatalog(t, catalog)
 	assertTimetrackEmptyListData(t, assertTimetrackJSON(t, http.MethodGet, server.URL+"/api/time/entries", tokens.AccessToken, nil, http.StatusOK))
-	assertTimetrackEmptyListData(t, assertTimetrackJSON(t, http.MethodGet, server.URL+"/api/time/activities/recent", tokens.AccessToken, nil, http.StatusOK))
 
-	categoryID := decodeCreatedID(t, assertTimetrackJSON(t, http.MethodPost, server.URL+"/api/time/categories", tokens.AccessToken, map[string]any{
-		"name": "Work",
-		"kind": "area",
+	groupID := decodeCreatedID(t, assertTimetrackJSON(t, http.MethodPost, server.URL+"/api/time/category-groups", tokens.AccessToken, map[string]any{
+		"name": "Game",
 	}, http.StatusCreated))
 
-	activityID := decodeCreatedID(t, assertTimetrackJSON(t, http.MethodPost, server.URL+"/api/time/activities", tokens.AccessToken, map[string]any{
-		"name":        "Coding",
-		"categoryIds": []int64{categoryID},
+	optionID := decodeCreatedID(t, assertTimetrackJSON(t, http.MethodPost, server.URL+"/api/time/category-options", tokens.AccessToken, map[string]any{
+		"groupId": groupID,
+		"name":    "ATS",
 	}, http.StatusCreated))
 
-	assertTimetrackStatus(t, http.MethodPut, server.URL+"/api/time/activities/"+itoa(activityID), tokens.AccessToken, map[string]any{
-		"name":        "Coding (updated)",
-		"categoryIds": []int64{categoryID},
+	kindID := decodeCreatedID(t, assertTimetrackJSON(t, http.MethodPost, server.URL+"/api/time/activity-kinds", tokens.AccessToken, map[string]any{
+		"name": "Game",
+		"groupBindings": []map[string]any{
+			{"groupId": groupID, "required": true},
+		},
+	}, http.StatusCreated))
+
+	assertTimetrackStatus(t, http.MethodPut, server.URL+"/api/time/activity-kinds/"+itoa(kindID), tokens.AccessToken, map[string]any{
+		"name": "Game (updated)",
+		"groupBindings": []map[string]any{
+			{"groupId": groupID, "required": true},
+		},
 	}, http.StatusOK)
 
-	assertTimetrackStatus(t, http.MethodPut, server.URL+"/api/time/categories/"+itoa(categoryID), tokens.AccessToken, map[string]any{
-		"name": "Work updated",
-		"kind": "area",
+	assertTimetrackStatus(t, http.MethodPut, server.URL+"/api/time/category-groups/"+itoa(groupID), tokens.AccessToken, map[string]any{
+		"name": "Game updated",
 	}, http.StatusOK)
 
 	entryID := decodeCreatedID(t, assertTimetrackJSON(t, http.MethodPost, server.URL+"/api/time/entries", tokens.AccessToken, map[string]any{
-		"activityId": activityID,
-		"track":      "primary",
-		"startAt":    "2026-07-06T09:00:00Z",
-		"endAt":      "2026-07-06T12:00:00Z",
+		"activityKindId": kindID,
+		"track":          "primary",
+		"startAt":        "2026-07-06T09:00:00Z",
+		"endAt":          "2026-07-06T12:00:00Z",
+		"options": []map[string]any{
+			{"groupId": groupID, "optionId": optionID},
+		},
 	}, http.StatusCreated))
 
 	assertTimetrackStatus(t, http.MethodPost, server.URL+"/api/time/entries", tokens.AccessToken, map[string]any{
-		"activityId": activityID,
-		"track":      "primary",
-		"startAt":    "2026-07-06T11:00:00Z",
-		"endAt":      "2026-07-06T13:00:00Z",
+		"activityKindId": kindID,
+		"track":          "primary",
+		"startAt":        "2026-07-06T11:00:00Z",
+		"endAt":          "2026-07-06T13:00:00Z",
+		"options": []map[string]any{
+			{"groupId": groupID, "optionId": optionID},
+		},
 	}, http.StatusConflict)
 
 	assertTimetrackStatus(t, http.MethodGet, server.URL+"/api/time/entries?start=2026-07-01T00:00:00Z", tokens.AccessToken, nil, http.StatusOK)
-	assertTimetrackStatus(t, http.MethodGet, server.URL+"/api/time/activities/recent", tokens.AccessToken, nil, http.StatusOK)
 
-	assertTimetrackStatus(t, http.MethodPut, server.URL+"/api/time/entries/"+itoa(entryID), tokens.AccessToken, map[string]any{
-		"activityId": activityID,
-		"track":      "primary",
-		"startAt":    "2026-07-06T09:30:00Z",
-		"endAt":      "2026-07-06T12:30:00Z",
+	assertTimetrackStatus(t, http.MethodPatch, server.URL+"/api/time/entries/"+itoa(entryID)+"/time", tokens.AccessToken, map[string]any{
+		"track":   "primary",
+		"startAt": "2026-07-06T09:30:00Z",
+		"endAt":   "2026-07-06T12:30:00Z",
+	}, http.StatusOK)
+
+	assertTimetrackStatus(t, http.MethodPatch, server.URL+"/api/time/entries/"+itoa(entryID)+"/selection", tokens.AccessToken, map[string]any{
+		"activityKindId": kindID,
+		"options": []map[string]any{
+			{"groupId": groupID, "optionId": optionID},
+		},
 	}, http.StatusOK)
 
 	assertTimetrackStatus(t, http.MethodDelete, server.URL+"/api/time/entries/"+itoa(entryID), tokens.AccessToken, nil, http.StatusOK)
-	assertTimetrackStatus(t, http.MethodDelete, server.URL+"/api/time/categories/"+itoa(categoryID), tokens.AccessToken, nil, http.StatusOK)
+
+	// The kind still binds the group — unbind first, same as the UI would
+	// require before letting the group/option be deleted.
+	assertTimetrackStatus(t, http.MethodPut, server.URL+"/api/time/activity-kinds/"+itoa(kindID), tokens.AccessToken, map[string]any{
+		"name":          "Game (updated)",
+		"groupBindings": []map[string]any{},
+	}, http.StatusOK)
+
+	// CategoryOption/CategoryGroup are now referenced by nothing, so a hard
+	// delete of each must succeed.
+	assertTimetrackStatus(t, http.MethodDelete, server.URL+"/api/time/category-options/"+itoa(optionID), tokens.AccessToken, nil, http.StatusOK)
+	assertTimetrackStatus(t, http.MethodDelete, server.URL+"/api/time/category-groups/"+itoa(groupID), tokens.AccessToken, nil, http.StatusOK)
+}
+
+// assertTimetrackEmptyCatalog catches nil-slice-marshals-to-JSON-null regressions
+// across all three catalog collections.
+func assertTimetrackEmptyCatalog(t *testing.T, payload map[string]any) {
+	t.Helper()
+	data, ok := payload["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload missing data object: %+v", payload)
+	}
+	for _, key := range []string{"activityKinds", "categoryGroups", "categoryOptions"} {
+		if _, ok := data[key].([]any); !ok {
+			t.Fatalf("payload data[%q] = %#v (%T), want empty []any, not null", key, data[key], data[key])
+		}
+	}
 }
 
 // assertTimetrackEmptyListData catches nil-slice-marshals-to-JSON-null regressions:

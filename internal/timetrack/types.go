@@ -7,59 +7,97 @@ const (
 	TrackSecondary Track = "secondary"
 )
 
-type Impact string
+const CategoryGroupKindArea = "area"
 
-const (
-	ImpactUseful   Impact = "useful"
-	ImpactNeutral  Impact = "neutral"
-	ImpactWasteful Impact = "wasteful"
-)
-
-const CategoryKindArea = "area"
-
-type Activity struct {
-	ID          int64   `json:"id"`
-	Name        string  `json:"name"`
-	IsArchived  bool    `json:"isArchived"`
-	CategoryIDs []int64 `json:"categoryIds"`
-	CreatedAt   string  `json:"createdAt"`
+type GroupBinding struct {
+	GroupID  int64 `json:"groupId"`
+	Required bool  `json:"required"`
 }
 
-type Category struct {
-	ID        int64   `json:"id"`
-	Name      string  `json:"name"`
-	Kind      *string `json:"kind"`
-	Color     *string `json:"color"`
-	Impact    *string `json:"impact"`
-	CreatedAt string  `json:"createdAt"`
+type ActivityKind struct {
+	ID            int64          `json:"id"`
+	Name          string         `json:"name"`
+	GroupBindings []GroupBinding `json:"groupBindings"`
+	IsArchived    bool           `json:"isArchived"`
+	CreatedAt     string         `json:"createdAt"`
+	UpdatedAt     string         `json:"updatedAt"`
+}
+
+type CategoryGroup struct {
+	ID         int64   `json:"id"`
+	Name       string  `json:"name"`
+	Kind       *string `json:"kind"`
+	IsArchived bool    `json:"isArchived"`
+	CreatedAt  string  `json:"createdAt"`
+	UpdatedAt  string  `json:"updatedAt"`
+}
+
+type CategoryOption struct {
+	ID         int64   `json:"id"`
+	GroupID    int64   `json:"groupId"`
+	Name       string  `json:"name"`
+	Color      *string `json:"color"`
+	IsArchived bool    `json:"isArchived"`
+	CreatedAt  string  `json:"createdAt"`
+	UpdatedAt  string  `json:"updatedAt"`
+}
+
+type EntryOption struct {
+	GroupID  int64 `json:"groupId"`
+	OptionID int64 `json:"optionId"`
 }
 
 type Entry struct {
-	ID         int64  `json:"id"`
-	ActivityID int64  `json:"activityId"`
-	Track      Track  `json:"track"`
-	StartAt    string `json:"startAt"`
-	EndAt      string `json:"endAt"`
-	CreatedAt  string `json:"createdAt"`
-	UpdatedAt  string `json:"updatedAt"`
+	ID             int64         `json:"id"`
+	ActivityKindID int64         `json:"activityKindId"`
+	Track          Track         `json:"track"`
+	StartAt        string        `json:"startAt"`
+	EndAt          string        `json:"endAt"`
+	Options        []EntryOption `json:"options"`
+	CreatedAt      string        `json:"createdAt"`
+	UpdatedAt      string        `json:"updatedAt"`
 }
 
-type ActivityInput struct {
-	Name        string  `json:"name"`
-	IsArchived  bool    `json:"isArchived"`
-	CategoryIDs []int64 `json:"categoryIds"`
+type Catalog struct {
+	ActivityKinds   []ActivityKind   `json:"activityKinds"`
+	CategoryGroups  []CategoryGroup  `json:"categoryGroups"`
+	CategoryOptions []CategoryOption `json:"categoryOptions"`
 }
 
-type CategoryInput struct {
-	Name   string  `json:"name"`
-	Kind   *string `json:"kind"`
-	Color  *string `json:"color"`
-	Impact *string `json:"impact"`
+type ActivityKindInput struct {
+	Name          string         `json:"name"`
+	GroupBindings []GroupBinding `json:"groupBindings"`
+	IsArchived    bool           `json:"isArchived"`
+}
+
+type CategoryGroupInput struct {
+	Name       string  `json:"name"`
+	Kind       *string `json:"kind"`
+	IsArchived bool    `json:"isArchived"`
+}
+
+type CategoryOptionInput struct {
+	GroupID    int64   `json:"groupId"`
+	Name       string  `json:"name"`
+	Color      *string `json:"color"`
+	IsArchived bool    `json:"isArchived"`
 }
 
 type EntryInput struct {
-	ActivityID int64  `json:"activityId"`
-	Track      Track  `json:"track"`
-	StartAt    string `json:"startAt"`
-	EndAt      string `json:"endAt"`
+	ActivityKindID int64         `json:"activityKindId"`
+	Track          Track         `json:"track"`
+	StartAt        string        `json:"startAt"`
+	EndAt          string        `json:"endAt"`
+	Options        []EntryOption `json:"options"`
+}
+
+type EntryTimeInput struct {
+	Track   Track  `json:"track"`
+	StartAt string `json:"startAt"`
+	EndAt   string `json:"endAt"`
+}
+
+type EntrySelectionInput struct {
+	ActivityKindID int64         `json:"activityKindId"`
+	Options        []EntryOption `json:"options"`
 }

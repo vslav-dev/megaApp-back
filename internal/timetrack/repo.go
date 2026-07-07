@@ -3,6 +3,7 @@ package timetrack
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -23,281 +24,86 @@ func NewRepository(db *sql.DB) *Repository {
 	return &Repository{db: db}
 }
 
-func (r *Repository) ListActivities(ctx context.Context, userID int64) ([]Activity, error) {
+// ---------- ActivityKind ----------
+
+func (r *Repository) ListActivityKinds(ctx context.Context, userID int64) ([]ActivityKind, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, name, isArchived, createdAt
-		FROM timeActivity
+		SELECT id, name, groupBindingsJson, isArchived, createdAt, updatedAt
+		FROM timeActivityKind
 		WHERE userId = ?
 		ORDER BY name ASC
 	`, userID)
 	if err != nil {
-		return nil, fmt.Errorf("list activities: %w", err)
+		return nil, fmt.Errorf("list activity kinds: %w", err)
 	}
 	defer rows.Close()
 
-	result := make([]Activity, 0)
+	result := make([]ActivityKind, 0)
 	for rows.Next() {
-		var item Activity
-		var isArchived int64
-		if err := rows.Scan(&item.ID, &item.Name, &isArchived, &item.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan activity: %w", err)
+		item, err := scanActivityKind(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan activity kind: %w", err)
 		}
-		item.IsArchived = isArchived != 0
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate activities: %w", err)
+		return nil, fmt.Errorf("iterate activity kinds: %w", err)
 	}
-
-	categoryIDsByActivity, err := r.listActivityCategoryIDs(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	for i := range result {
-		categoryIDs := categoryIDsByActivity[result[i].ID]
-		if categoryIDs == nil {
-			categoryIDs = make([]int64, 0)
-		}
-		result[i].CategoryIDs = categoryIDs
-	}
-
 	return result, nil
 }
 
-func (r *Repository) GetActivityByID(ctx context.Context, userID int64, activityID int64) (*Activity, error) {
+func (r *Repository) GetActivityKindByID(ctx context.Context, userID int64, id int64) (*ActivityKind, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, name, isArchived, createdAt
-		FROM timeActivity
+		SELECT id, name, groupBindingsJson, isArchived, createdAt, updatedAt
+		FROM timeActivityKind
 		WHERE id = ? AND userId = ?
-	`, activityID, userID)
+	`, id, userID)
 
-	var item Activity
-	var isArchived int64
-	if err := row.Scan(&item.ID, &item.Name, &isArchived, &item.CreatedAt); err != nil {
+	item, err := scanActivityKind(row)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("get activity: %w", err)
+		return nil, fmt.Errorf("get activity kind: %w", err)
 	}
-	item.IsArchived = isArchived != 0
-
-	categoryIDs, err := r.listCategoryIDsForActivity(ctx, activityID)
-	if err != nil {
-		return nil, err
-	}
-	item.CategoryIDs = categoryIDs
-
 	return &item, nil
 }
 
-func (r *Repository) listActivityCategoryIDs(ctx context.Context, userID int64) (map[int64][]int64, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT ac.activityId, ac.categoryId
-		FROM timeActivityCategory ac
-		JOIN timeActivity a ON a.id = ac.activityId
-		WHERE a.userId = ?
-		ORDER BY ac.activityId ASC, ac.categoryId ASC
-	`, userID)
+func (r *Repository) CreateActivityKind(ctx context.Context, userID int64, input ActivityKindInput, now string) (int64, error) {
+	bindingsJSON, err := marshalGroupBindings(input.GroupBindings)
 	if err != nil {
-		return nil, fmt.Errorf("list activity category ids: %w", err)
-	}
-	defer rows.Close()
-
-	result := make(map[int64][]int64)
-	for rows.Next() {
-		var activityID, categoryID int64
-		if err := rows.Scan(&activityID, &categoryID); err != nil {
-			return nil, fmt.Errorf("scan activity category id: %w", err)
-		}
-		result[activityID] = append(result[activityID], categoryID)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate activity category ids: %w", err)
-	}
-	return result, nil
-}
-
-func (r *Repository) listCategoryIDsForActivity(ctx context.Context, activityID int64) ([]int64, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT categoryId
-		FROM timeActivityCategory
-		WHERE activityId = ?
-		ORDER BY categoryId ASC
-	`, activityID)
-	if err != nil {
-		return nil, fmt.Errorf("list category ids for activity: %w", err)
-	}
-	defer rows.Close()
-
-	result := make([]int64, 0)
-	for rows.Next() {
-		var categoryID int64
-		if err := rows.Scan(&categoryID); err != nil {
-			return nil, fmt.Errorf("scan category id: %w", err)
-		}
-		result = append(result, categoryID)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate category ids: %w", err)
-	}
-	return result, nil
-}
-
-func (r *Repository) CreateActivity(ctx context.Context, userID int64, input ActivityInput, now string) (id int64, err error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin create activity: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	result, err := tx.ExecContext(ctx, `
-		INSERT INTO timeActivity (userId, name, isArchived, createdAt)
-		VALUES (?, ?, ?, ?)
-	`, userID, input.Name, boolToInt64(input.IsArchived), now)
-	if err != nil {
-		return 0, fmt.Errorf("create activity: %w", err)
-	}
-	id, err = result.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("activity last insert id: %w", err)
-	}
-
-	if err = replaceActivityCategories(ctx, tx, id, input.CategoryIDs); err != nil {
 		return 0, err
 	}
-
-	if err = tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit create activity: %w", err)
-	}
-	return id, nil
-}
-
-func (r *Repository) UpdateActivity(ctx context.Context, userID int64, activityID int64, input ActivityInput) (err error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin update activity: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	result, err := tx.ExecContext(ctx, `
-		UPDATE timeActivity
-		SET name = ?, isArchived = ?
-		WHERE id = ? AND userId = ?
-	`, input.Name, boolToInt64(input.IsArchived), activityID, userID)
-	if err != nil {
-		return fmt.Errorf("update activity: %w", err)
-	}
-	changedRows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("update activity rows affected: %w", err)
-	}
-	if changedRows == 0 {
-		return sql.ErrNoRows
-	}
-
-	if err = replaceActivityCategories(ctx, tx, activityID, input.CategoryIDs); err != nil {
-		return err
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("commit update activity: %w", err)
-	}
-	return nil
-}
-
-func replaceActivityCategories(ctx context.Context, tx *sql.Tx, activityID int64, categoryIDs []int64) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM timeActivityCategory WHERE activityId = ?`, activityID); err != nil {
-		return fmt.Errorf("clear activity categories: %w", err)
-	}
-	for _, categoryID := range categoryIDs {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO timeActivityCategory (activityId, categoryId)
-			VALUES (?, ?)
-		`, activityID, categoryID); err != nil {
-			return fmt.Errorf("insert activity category: %w", err)
-		}
-	}
-	return nil
-}
-
-func (r *Repository) ListCategories(ctx context.Context, userID int64) ([]Category, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, name, kind, color, impact, createdAt
-		FROM timeCategory
-		WHERE userId = ?
-		ORDER BY name ASC
-	`, userID)
-	if err != nil {
-		return nil, fmt.Errorf("list categories: %w", err)
-	}
-	defer rows.Close()
-
-	result := make([]Category, 0)
-	for rows.Next() {
-		item, err := scanCategory(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan category: %w", err)
-		}
-		result = append(result, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate categories: %w", err)
-	}
-	return result, nil
-}
-
-func (r *Repository) GetCategoryByID(ctx context.Context, userID int64, categoryID int64) (*Category, error) {
-	row := r.db.QueryRowContext(ctx, `
-		SELECT id, name, kind, color, impact, createdAt
-		FROM timeCategory
-		WHERE id = ? AND userId = ?
-	`, categoryID, userID)
-
-	item, err := scanCategory(row)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("get category: %w", err)
-	}
-	return &item, nil
-}
-
-func (r *Repository) CreateCategory(ctx context.Context, userID int64, input CategoryInput, now string) (int64, error) {
 	result, err := r.db.ExecContext(ctx, `
-		INSERT INTO timeCategory (userId, name, kind, color, impact, createdAt)
+		INSERT INTO timeActivityKind (userId, name, groupBindingsJson, isArchived, createdAt, updatedAt)
 		VALUES (?, ?, ?, ?, ?, ?)
-	`, userID, input.Name, valueOrNil(input.Kind), valueOrNil(input.Color), valueOrNil(input.Impact), now)
+	`, userID, input.Name, bindingsJSON, boolToInt64(input.IsArchived), now, now)
 	if err != nil {
-		return 0, fmt.Errorf("create category: %w", err)
+		return 0, fmt.Errorf("create activity kind: %w", err)
 	}
 	id, err := result.LastInsertId()
 	if err != nil {
-		return 0, fmt.Errorf("category last insert id: %w", err)
+		return 0, fmt.Errorf("activity kind last insert id: %w", err)
 	}
 	return id, nil
 }
 
-func (r *Repository) UpdateCategory(ctx context.Context, userID int64, categoryID int64, input CategoryInput) error {
-	result, err := r.db.ExecContext(ctx, `
-		UPDATE timeCategory
-		SET name = ?, kind = ?, color = ?, impact = ?
-		WHERE id = ? AND userId = ?
-	`, input.Name, valueOrNil(input.Kind), valueOrNil(input.Color), valueOrNil(input.Impact), categoryID, userID)
+func (r *Repository) UpdateActivityKind(ctx context.Context, userID int64, id int64, input ActivityKindInput, now string) error {
+	bindingsJSON, err := marshalGroupBindings(input.GroupBindings)
 	if err != nil {
-		return fmt.Errorf("update category: %w", err)
+		return err
+	}
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE timeActivityKind
+		SET name = ?, groupBindingsJson = ?, isArchived = ?, updatedAt = ?
+		WHERE id = ? AND userId = ?
+	`, input.Name, bindingsJSON, boolToInt64(input.IsArchived), now, id, userID)
+	if err != nil {
+		return fmt.Errorf("update activity kind: %w", err)
 	}
 	changedRows, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("update category rows affected: %w", err)
+		return fmt.Errorf("update activity kind rows affected: %w", err)
 	}
 	if changedRows == 0 {
 		return sql.ErrNoRows
@@ -305,37 +111,280 @@ func (r *Repository) UpdateCategory(ctx context.Context, userID int64, categoryI
 	return nil
 }
 
-func (r *Repository) DeleteCategory(ctx context.Context, userID int64, categoryID int64) error {
-	result, err := r.db.ExecContext(ctx, `
-		DELETE FROM timeCategory
-		WHERE id = ? AND userId = ?
-	`, categoryID, userID)
+// ---------- CategoryGroup ----------
+
+func (r *Repository) ListCategoryGroups(ctx context.Context, userID int64) ([]CategoryGroup, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, name, kind, isArchived, createdAt, updatedAt
+		FROM timeCategoryGroup
+		WHERE userId = ?
+		ORDER BY name ASC
+	`, userID)
 	if err != nil {
-		return fmt.Errorf("delete category: %w", err)
+		return nil, fmt.Errorf("list category groups: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]CategoryGroup, 0)
+	for rows.Next() {
+		item, err := scanCategoryGroup(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan category group: %w", err)
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate category groups: %w", err)
+	}
+	return result, nil
+}
+
+func (r *Repository) GetCategoryGroupByID(ctx context.Context, userID int64, id int64) (*CategoryGroup, error) {
+	row := r.db.QueryRowContext(ctx, `
+		SELECT id, name, kind, isArchived, createdAt, updatedAt
+		FROM timeCategoryGroup
+		WHERE id = ? AND userId = ?
+	`, id, userID)
+
+	item, err := scanCategoryGroup(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get category group: %w", err)
+	}
+	return &item, nil
+}
+
+func (r *Repository) CreateCategoryGroup(ctx context.Context, userID int64, input CategoryGroupInput, now string) (int64, error) {
+	result, err := r.db.ExecContext(ctx, `
+		INSERT INTO timeCategoryGroup (userId, name, kind, isArchived, createdAt, updatedAt)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, userID, input.Name, valueOrNil(input.Kind), boolToInt64(input.IsArchived), now, now)
+	if err != nil {
+		return 0, fmt.Errorf("create category group: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("category group last insert id: %w", err)
+	}
+	return id, nil
+}
+
+func (r *Repository) UpdateCategoryGroup(ctx context.Context, userID int64, id int64, input CategoryGroupInput, now string) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE timeCategoryGroup
+		SET name = ?, kind = ?, isArchived = ?, updatedAt = ?
+		WHERE id = ? AND userId = ?
+	`, input.Name, valueOrNil(input.Kind), boolToInt64(input.IsArchived), now, id, userID)
+	if err != nil {
+		return fmt.Errorf("update category group: %w", err)
 	}
 	changedRows, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("delete category rows affected: %w", err)
+		return fmt.Errorf("update category group rows affected: %w", err)
 	}
 	if changedRows == 0 {
 		return sql.ErrNoRows
 	}
 	return nil
 }
+
+func (r *Repository) DeleteCategoryGroup(ctx context.Context, userID int64, id int64) error {
+	result, err := r.db.ExecContext(ctx, `
+		DELETE FROM timeCategoryGroup
+		WHERE id = ? AND userId = ?
+	`, id, userID)
+	if err != nil {
+		return fmt.Errorf("delete category group: %w", err)
+	}
+	changedRows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete category group rows affected: %w", err)
+	}
+	if changedRows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// CountOptionsInGroup is used by the service to block group delete/archive
+// while it still owns options — mirrors money's CountChildCategories/
+// CountTransactionsByCategory pre-check pattern (app-level, not a caught FK error).
+func (r *Repository) CountOptionsInGroup(ctx context.Context, groupID int64) (int64, error) {
+	var count int64
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM timeCategoryOption WHERE groupId = ?
+	`, groupID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count options in group: %w", err)
+	}
+	return count, nil
+}
+
+// CountNonArchivedAreaGroups is used by the service to enforce "at most one
+// non-archived kind='area' group per user".
+func (r *Repository) CountNonArchivedAreaGroups(ctx context.Context, userID int64, excludeID *int64) (int64, error) {
+	var count int64
+	var err error
+	if excludeID == nil {
+		err = r.db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM timeCategoryGroup
+			WHERE userId = ? AND kind = ? AND isArchived = 0
+		`, userID, CategoryGroupKindArea).Scan(&count)
+	} else {
+		err = r.db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM timeCategoryGroup
+			WHERE userId = ? AND kind = ? AND isArchived = 0 AND id != ?
+		`, userID, CategoryGroupKindArea, *excludeID).Scan(&count)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("count non-archived area groups: %w", err)
+	}
+	return count, nil
+}
+
+// ---------- CategoryOption ----------
+
+func (r *Repository) ListCategoryOptions(ctx context.Context, userID int64) ([]CategoryOption, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, groupId, name, color, isArchived, createdAt, updatedAt
+		FROM timeCategoryOption
+		WHERE userId = ?
+		ORDER BY name ASC
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list category options: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]CategoryOption, 0)
+	for rows.Next() {
+		item, err := scanCategoryOption(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan category option: %w", err)
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate category options: %w", err)
+	}
+	return result, nil
+}
+
+func (r *Repository) GetCategoryOptionByID(ctx context.Context, userID int64, id int64) (*CategoryOption, error) {
+	row := r.db.QueryRowContext(ctx, `
+		SELECT id, groupId, name, color, isArchived, createdAt, updatedAt
+		FROM timeCategoryOption
+		WHERE id = ? AND userId = ?
+	`, id, userID)
+
+	item, err := scanCategoryOption(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get category option: %w", err)
+	}
+	return &item, nil
+}
+
+func (r *Repository) CreateCategoryOption(ctx context.Context, userID int64, input CategoryOptionInput, now string) (int64, error) {
+	result, err := r.db.ExecContext(ctx, `
+		INSERT INTO timeCategoryOption (userId, groupId, name, color, isArchived, createdAt, updatedAt)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, userID, input.GroupID, input.Name, valueOrNil(input.Color), boolToInt64(input.IsArchived), now, now)
+	if err != nil {
+		return 0, fmt.Errorf("create category option: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("category option last insert id: %w", err)
+	}
+	return id, nil
+}
+
+func (r *Repository) UpdateCategoryOption(ctx context.Context, userID int64, id int64, input CategoryOptionInput, now string) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE timeCategoryOption
+		SET groupId = ?, name = ?, color = ?, isArchived = ?, updatedAt = ?
+		WHERE id = ? AND userId = ?
+	`, input.GroupID, input.Name, valueOrNil(input.Color), boolToInt64(input.IsArchived), now, id, userID)
+	if err != nil {
+		return fmt.Errorf("update category option: %w", err)
+	}
+	changedRows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update category option rows affected: %w", err)
+	}
+	if changedRows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (r *Repository) DeleteCategoryOption(ctx context.Context, userID int64, id int64) error {
+	result, err := r.db.ExecContext(ctx, `
+		DELETE FROM timeCategoryOption
+		WHERE id = ? AND userId = ?
+	`, id, userID)
+	if err != nil {
+		return fmt.Errorf("delete category option: %w", err)
+	}
+	changedRows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete category option rows affected: %w", err)
+	}
+	if changedRows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// CountEntryOptionsForOption is used by the service to block option
+// delete/archive while historical entries still reference it.
+func (r *Repository) CountEntryOptionsForOption(ctx context.Context, optionID int64) (int64, error) {
+	var count int64
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM timeEntryOption WHERE optionId = ?
+	`, optionID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count entry options for option: %w", err)
+	}
+	return count, nil
+}
+
+// ---------- Catalog ----------
+
+func (r *Repository) GetCatalog(ctx context.Context, userID int64) (Catalog, error) {
+	kinds, err := r.ListActivityKinds(ctx, userID)
+	if err != nil {
+		return Catalog{}, err
+	}
+	groups, err := r.ListCategoryGroups(ctx, userID)
+	if err != nil {
+		return Catalog{}, err
+	}
+	options, err := r.ListCategoryOptions(ctx, userID)
+	if err != nil {
+		return Catalog{}, err
+	}
+	return Catalog{ActivityKinds: kinds, CategoryGroups: groups, CategoryOptions: options}, nil
+}
+
+// ---------- Entry ----------
 
 func (r *Repository) ListEntries(ctx context.Context, userID int64, start *string) ([]Entry, error) {
 	var rows *sql.Rows
 	var err error
 	if start == nil {
 		rows, err = r.db.QueryContext(ctx, `
-			SELECT id, activityId, track, startAt, endAt, createdAt, updatedAt
+			SELECT id, activityKindId, track, startAt, endAt, createdAt, updatedAt
 			FROM timeEntry
 			WHERE userId = ?
 			ORDER BY startAt ASC
 		`, userID)
 	} else {
 		rows, err = r.db.QueryContext(ctx, `
-			SELECT id, activityId, track, startAt, endAt, createdAt, updatedAt
+			SELECT id, activityKindId, track, startAt, endAt, createdAt, updatedAt
 			FROM timeEntry
 			WHERE userId = ? AND startAt >= ?
 			ORDER BY startAt ASC
@@ -357,12 +406,25 @@ func (r *Repository) ListEntries(ctx context.Context, userID int64, start *strin
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate entries: %w", err)
 	}
+
+	optionsByEntry, err := r.listEntryOptionsForUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range result {
+		options := optionsByEntry[result[i].ID]
+		if options == nil {
+			options = make([]EntryOption, 0)
+		}
+		result[i].Options = options
+	}
+
 	return result, nil
 }
 
 func (r *Repository) GetEntryByID(ctx context.Context, userID int64, entryID int64) (*Entry, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, activityId, track, startAt, endAt, createdAt, updatedAt
+		SELECT id, activityKindId, track, startAt, endAt, createdAt, updatedAt
 		FROM timeEntry
 		WHERE id = ? AND userId = ?
 	`, entryID, userID)
@@ -374,13 +436,76 @@ func (r *Repository) GetEntryByID(ctx context.Context, userID int64, entryID int
 		}
 		return nil, fmt.Errorf("get entry: %w", err)
 	}
+
+	options, err := r.listEntryOptions(ctx, entryID)
+	if err != nil {
+		return nil, err
+	}
+	item.Options = options
+
 	return &item, nil
 }
 
-// CreateEntry checks for an overlap and inserts the new entry atomically —
-// the check and the write happen inside the same transaction so the whole
-// operation is all-or-nothing (call is expected to be serialized by the
-// caller's mutex, see Service).
+// listEntryOptionsForUser groups options by entryId in one query — same
+// batching pattern as listActivityCategoryIDs, avoids N+1 on ListEntries.
+func (r *Repository) listEntryOptionsForUser(ctx context.Context, userID int64) (map[int64][]EntryOption, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT eo.entryId, eo.groupId, eo.optionId
+		FROM timeEntryOption eo
+		JOIN timeEntry e ON e.id = eo.entryId
+		WHERE e.userId = ?
+		ORDER BY eo.entryId ASC, eo.groupId ASC
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list entry options for user: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[int64][]EntryOption)
+	for rows.Next() {
+		var entryID int64
+		var option EntryOption
+		if err := rows.Scan(&entryID, &option.GroupID, &option.OptionID); err != nil {
+			return nil, fmt.Errorf("scan entry option: %w", err)
+		}
+		result[entryID] = append(result[entryID], option)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate entry options: %w", err)
+	}
+	return result, nil
+}
+
+func (r *Repository) listEntryOptions(ctx context.Context, entryID int64) ([]EntryOption, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT groupId, optionId
+		FROM timeEntryOption
+		WHERE entryId = ?
+		ORDER BY groupId ASC
+	`, entryID)
+	if err != nil {
+		return nil, fmt.Errorf("list entry options: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]EntryOption, 0)
+	for rows.Next() {
+		var option EntryOption
+		if err := rows.Scan(&option.GroupID, &option.OptionID); err != nil {
+			return nil, fmt.Errorf("scan entry option: %w", err)
+		}
+		result = append(result, option)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate entry options: %w", err)
+	}
+	return result, nil
+}
+
+// CreateEntry checks for an overlap and inserts the entry + its options
+// atomically — the check and the write happen inside the same transaction so
+// the whole operation is all-or-nothing (call is expected to be serialized by
+// the caller's mutex, see Service).
 func (r *Repository) CreateEntry(ctx context.Context, userID int64, input EntryInput, now string) (id int64, err error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -402,9 +527,9 @@ func (r *Repository) CreateEntry(ctx context.Context, userID int64, input EntryI
 	}
 
 	result, err := tx.ExecContext(ctx, `
-		INSERT INTO timeEntry (userId, activityId, track, startAt, endAt, createdAt, updatedAt)
+		INSERT INTO timeEntry (userId, activityKindId, track, startAt, endAt, createdAt, updatedAt)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, userID, input.ActivityID, input.Track, input.StartAt, input.EndAt, now, now)
+	`, userID, input.ActivityKindID, input.Track, input.StartAt, input.EndAt, now, now)
 	if err != nil {
 		return 0, fmt.Errorf("create entry: %w", err)
 	}
@@ -413,18 +538,23 @@ func (r *Repository) CreateEntry(ctx context.Context, userID int64, input EntryI
 		return 0, fmt.Errorf("entry last insert id: %w", err)
 	}
 
+	if err = insertEntryOptions(ctx, tx, id, input.Options); err != nil {
+		return 0, err
+	}
+
 	if err = tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit create entry: %w", err)
 	}
 	return id, nil
 }
 
-// UpdateEntry checks for an overlap (excluding itself) and writes the new
-// fields atomically, same reasoning as CreateEntry.
-func (r *Repository) UpdateEntry(ctx context.Context, userID int64, entryID int64, input EntryInput, now string) (err error) {
+// UpdateEntryTime checks for an overlap (excluding itself) and writes only
+// track/startAt/endAt atomically — semantic selection (activityKindId,
+// options) is left untouched, see implementation plan ("Update time").
+func (r *Repository) UpdateEntryTime(ctx context.Context, userID int64, entryID int64, input EntryTimeInput, now string) (err error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin update entry: %w", err)
+		return fmt.Errorf("begin update entry time: %w", err)
 	}
 	defer func() {
 		if err != nil {
@@ -443,15 +573,15 @@ func (r *Repository) UpdateEntry(ctx context.Context, userID int64, entryID int6
 
 	result, err := tx.ExecContext(ctx, `
 		UPDATE timeEntry
-		SET activityId = ?, track = ?, startAt = ?, endAt = ?, updatedAt = ?
+		SET track = ?, startAt = ?, endAt = ?, updatedAt = ?
 		WHERE id = ? AND userId = ?
-	`, input.ActivityID, input.Track, input.StartAt, input.EndAt, now, entryID, userID)
+	`, input.Track, input.StartAt, input.EndAt, now, entryID, userID)
 	if err != nil {
-		return fmt.Errorf("update entry: %w", err)
+		return fmt.Errorf("update entry time: %w", err)
 	}
 	changedRows, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("update entry rows affected: %w", err)
+		return fmt.Errorf("update entry time rows affected: %w", err)
 	}
 	if changedRows == 0 {
 		err = sql.ErrNoRows
@@ -459,7 +589,64 @@ func (r *Repository) UpdateEntry(ctx context.Context, userID int64, entryID int6
 	}
 
 	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("commit update entry: %w", err)
+		return fmt.Errorf("commit update entry time: %w", err)
+	}
+	return nil
+}
+
+// UpdateEntrySelection replaces activityKindId and the full set of options —
+// track/startAt/endAt are left untouched, see implementation plan
+// ("Update selection"). No overlap check: the interval doesn't change.
+func (r *Repository) UpdateEntrySelection(ctx context.Context, userID int64, entryID int64, input EntrySelectionInput, now string) (err error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin update entry selection: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE timeEntry
+		SET activityKindId = ?, updatedAt = ?
+		WHERE id = ? AND userId = ?
+	`, input.ActivityKindID, now, entryID, userID)
+	if err != nil {
+		return fmt.Errorf("update entry selection: %w", err)
+	}
+	changedRows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update entry selection rows affected: %w", err)
+	}
+	if changedRows == 0 {
+		err = sql.ErrNoRows
+		return err
+	}
+
+	if _, err = tx.ExecContext(ctx, `DELETE FROM timeEntryOption WHERE entryId = ?`, entryID); err != nil {
+		err = fmt.Errorf("clear entry options: %w", err)
+		return err
+	}
+	if err = insertEntryOptions(ctx, tx, entryID, input.Options); err != nil {
+		return err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit update entry selection: %w", err)
+	}
+	return nil
+}
+
+func insertEntryOptions(ctx context.Context, tx *sql.Tx, entryID int64, options []EntryOption) error {
+	for _, option := range options {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO timeEntryOption (entryId, groupId, optionId)
+			VALUES (?, ?, ?)
+		`, entryID, option.GroupID, option.OptionID); err != nil {
+			return fmt.Errorf("insert entry option: %w", err)
+		}
 	}
 	return nil
 }
@@ -507,70 +694,74 @@ func hasOverlap(ctx context.Context, runner txRunner, userID int64, track Track,
 	return count > 0, nil
 }
 
-// ListRecentActivityIDs returns activityId ordered by the most recent
-// startAt they were used with — for autocomplete/quick-picker on the
-// frontend. No dedicated table, derived on the fly (see concept doc).
-func (r *Repository) ListRecentActivityIDs(ctx context.Context, userID int64, track *Track, limit int) ([]int64, error) {
-	var rows *sql.Rows
-	var err error
-	if track == nil {
-		rows, err = r.db.QueryContext(ctx, `
-			SELECT activityId
-			FROM timeEntry
-			WHERE userId = ?
-			GROUP BY activityId
-			ORDER BY MAX(startAt) DESC
-			LIMIT ?
-		`, userID, limit)
-	} else {
-		rows, err = r.db.QueryContext(ctx, `
-			SELECT activityId
-			FROM timeEntry
-			WHERE userId = ? AND track = ?
-			GROUP BY activityId
-			ORDER BY MAX(startAt) DESC
-			LIMIT ?
-		`, userID, *track, limit)
+func scanActivityKind(scanner interface{ Scan(dest ...any) error }) (ActivityKind, error) {
+	var item ActivityKind
+	var bindingsJSON string
+	var isArchived int64
+	if err := scanner.Scan(&item.ID, &item.Name, &bindingsJSON, &isArchived, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		return ActivityKind{}, err
 	}
+	item.IsArchived = isArchived != 0
+	bindings, err := unmarshalGroupBindings(bindingsJSON)
 	if err != nil {
-		return nil, fmt.Errorf("list recent activity ids: %w", err)
+		return ActivityKind{}, err
 	}
-	defer rows.Close()
-
-	result := make([]int64, 0)
-	for rows.Next() {
-		var activityID int64
-		if err := rows.Scan(&activityID); err != nil {
-			return nil, fmt.Errorf("scan recent activity id: %w", err)
-		}
-		result = append(result, activityID)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate recent activity ids: %w", err)
-	}
-	return result, nil
+	item.GroupBindings = bindings
+	return item, nil
 }
 
-func scanCategory(scanner interface{ Scan(dest ...any) error }) (Category, error) {
-	var item Category
+func scanCategoryGroup(scanner interface{ Scan(dest ...any) error }) (CategoryGroup, error) {
+	var item CategoryGroup
 	var kind sql.NullString
-	var color sql.NullString
-	var impact sql.NullString
-	if err := scanner.Scan(&item.ID, &item.Name, &kind, &color, &impact, &item.CreatedAt); err != nil {
-		return Category{}, err
+	var isArchived int64
+	if err := scanner.Scan(&item.ID, &item.Name, &kind, &isArchived, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		return CategoryGroup{}, err
 	}
 	item.Kind = nullableString(kind)
+	item.IsArchived = isArchived != 0
+	return item, nil
+}
+
+func scanCategoryOption(scanner interface{ Scan(dest ...any) error }) (CategoryOption, error) {
+	var item CategoryOption
+	var color sql.NullString
+	var isArchived int64
+	if err := scanner.Scan(&item.ID, &item.GroupID, &item.Name, &color, &isArchived, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		return CategoryOption{}, err
+	}
 	item.Color = nullableString(color)
-	item.Impact = nullableString(impact)
+	item.IsArchived = isArchived != 0
 	return item, nil
 }
 
 func scanEntry(scanner interface{ Scan(dest ...any) error }) (Entry, error) {
 	var item Entry
-	if err := scanner.Scan(&item.ID, &item.ActivityID, &item.Track, &item.StartAt, &item.EndAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+	if err := scanner.Scan(&item.ID, &item.ActivityKindID, &item.Track, &item.StartAt, &item.EndAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return Entry{}, err
 	}
 	return item, nil
+}
+
+func marshalGroupBindings(bindings []GroupBinding) (string, error) {
+	if bindings == nil {
+		bindings = []GroupBinding{}
+	}
+	encoded, err := json.Marshal(bindings)
+	if err != nil {
+		return "", fmt.Errorf("marshal group bindings: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func unmarshalGroupBindings(value string) ([]GroupBinding, error) {
+	result := make([]GroupBinding, 0)
+	if value == "" {
+		return result, nil
+	}
+	if err := json.Unmarshal([]byte(value), &result); err != nil {
+		return nil, fmt.Errorf("unmarshal group bindings: %w", err)
+	}
+	return result, nil
 }
 
 func nullableString(value sql.NullString) *string {

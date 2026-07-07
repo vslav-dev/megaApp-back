@@ -23,72 +23,66 @@ func RegisterRoutes(router chi.Router, authService *auth.Service, handler *Handl
 	router.Route("/api/time", func(r chi.Router) {
 		r.Use(auth.Middleware(authService))
 
-		r.Get("/activities", handler.GetActivities)
-		r.Post("/activities", handler.CreateActivity)
-		r.Put("/activities/{id}", handler.UpdateActivity)
-		r.Get("/activities/recent", handler.GetRecentActivities)
+		r.Get("/catalog", handler.GetCatalog)
 
-		r.Get("/categories", handler.GetCategories)
-		r.Post("/categories", handler.CreateCategory)
-		r.Put("/categories/{id}", handler.UpdateCategory)
-		r.Delete("/categories/{id}", handler.DeleteCategory)
+		r.Post("/activity-kinds", handler.CreateActivityKind)
+		r.Put("/activity-kinds/{id}", handler.UpdateActivityKind)
+
+		r.Post("/category-groups", handler.CreateCategoryGroup)
+		r.Put("/category-groups/{id}", handler.UpdateCategoryGroup)
+		r.Delete("/category-groups/{id}", handler.DeleteCategoryGroup)
+
+		r.Post("/category-options", handler.CreateCategoryOption)
+		r.Put("/category-options/{id}", handler.UpdateCategoryOption)
+		r.Delete("/category-options/{id}", handler.DeleteCategoryOption)
 
 		r.Get("/entries", handler.GetEntries)
 		r.Post("/entries", handler.CreateEntry)
-		r.Put("/entries/{id}", handler.UpdateEntry)
+		r.Patch("/entries/{id}/time", handler.UpdateEntryTime)
+		r.Patch("/entries/{id}/selection", handler.UpdateEntrySelection)
 		r.Delete("/entries/{id}", handler.DeleteEntry)
 	})
 }
 
-func (h *Handler) GetActivities(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) GetCatalog(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.UserClaimsFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
-	var isArchivedFilter *bool
-	if raw := strings.TrimSpace(r.URL.Query().Get("isArchived")); raw != "" {
-		parsed, err := strconv.ParseBool(raw)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "Invalid isArchived")
-			return
-		}
-		isArchivedFilter = &parsed
-	}
-
-	response, err := h.service.GetActivities(r.Context(), claims.UserID, isArchivedFilter)
+	response, err := h.service.GetCatalog(r.Context(), claims.UserID)
 	if err != nil {
-		writeAppError(w, err, http.StatusInternalServerError, "Failed to get activities")
+		writeAppError(w, err, http.StatusInternalServerError, "Failed to get catalog")
 		return
 	}
 
 	writeSuccessData(w, http.StatusOK, response)
 }
 
-func (h *Handler) CreateActivity(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) CreateActivityKind(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.UserClaimsFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
-	var request ActivityInput
+	var request ActivityKindInput
 	if err := legacy.DecodeJSON(r, &request); err != nil {
 		writeAppError(w, err, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	createdID, err := h.service.CreateActivity(r.Context(), claims.UserID, request)
+	createdID, err := h.service.CreateActivityKind(r.Context(), claims.UserID, request)
 	if err != nil {
-		writeAppError(w, err, http.StatusInternalServerError, "Failed to create activity")
+		writeAppError(w, err, http.StatusInternalServerError, "Failed to create activity kind")
 		return
 	}
 
 	writeSuccessData(w, http.StatusCreated, map[string]int64{"id": createdID})
 }
 
-func (h *Handler) UpdateActivity(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) UpdateActivityKind(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.UserClaimsFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "Unauthorized")
@@ -100,91 +94,43 @@ func (h *Handler) UpdateActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var request ActivityInput
+	var request ActivityKindInput
 	if err := legacy.DecodeJSON(r, &request); err != nil {
 		writeAppError(w, err, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	if err := h.service.UpdateActivity(r.Context(), claims.UserID, id, request); err != nil {
-		writeAppError(w, err, http.StatusInternalServerError, "Failed to update activity")
+	if err := h.service.UpdateActivityKind(r.Context(), claims.UserID, id, request); err != nil {
+		writeAppError(w, err, http.StatusInternalServerError, "Failed to update activity kind")
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Activity updated successfully")
+	writeSuccessMessage(w, http.StatusOK, "ActivityKind updated successfully")
 }
 
-func (h *Handler) GetRecentActivities(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) CreateCategoryGroup(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.UserClaimsFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
-	var track *Track
-	if raw := strings.TrimSpace(r.URL.Query().Get("track")); raw != "" {
-		parsed := Track(raw)
-		track = &parsed
-	}
-
-	limit := 0
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "Invalid limit")
-			return
-		}
-		limit = parsed
-	}
-
-	response, err := h.service.GetRecentActivityIDs(r.Context(), claims.UserID, track, limit)
-	if err != nil {
-		writeAppError(w, err, http.StatusInternalServerError, "Failed to get recent activities")
-		return
-	}
-
-	writeSuccessData(w, http.StatusOK, response)
-}
-
-func (h *Handler) GetCategories(w http.ResponseWriter, r *http.Request) {
-	claims, ok := auth.UserClaimsFromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "Unauthorized")
-		return
-	}
-
-	response, err := h.service.GetCategories(r.Context(), claims.UserID)
-	if err != nil {
-		writeAppError(w, err, http.StatusInternalServerError, "Failed to get categories")
-		return
-	}
-
-	writeSuccessData(w, http.StatusOK, response)
-}
-
-func (h *Handler) CreateCategory(w http.ResponseWriter, r *http.Request) {
-	claims, ok := auth.UserClaimsFromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "Unauthorized")
-		return
-	}
-
-	var request CategoryInput
+	var request CategoryGroupInput
 	if err := legacy.DecodeJSON(r, &request); err != nil {
 		writeAppError(w, err, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	createdID, err := h.service.CreateCategory(r.Context(), claims.UserID, request)
+	createdID, err := h.service.CreateCategoryGroup(r.Context(), claims.UserID, request)
 	if err != nil {
-		writeAppError(w, err, http.StatusInternalServerError, "Failed to create category")
+		writeAppError(w, err, http.StatusInternalServerError, "Failed to create category group")
 		return
 	}
 
 	writeSuccessData(w, http.StatusCreated, map[string]int64{"id": createdID})
 }
 
-func (h *Handler) UpdateCategory(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) UpdateCategoryGroup(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.UserClaimsFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "Unauthorized")
@@ -196,21 +142,21 @@ func (h *Handler) UpdateCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var request CategoryInput
+	var request CategoryGroupInput
 	if err := legacy.DecodeJSON(r, &request); err != nil {
 		writeAppError(w, err, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	if err := h.service.UpdateCategory(r.Context(), claims.UserID, id, request); err != nil {
-		writeAppError(w, err, http.StatusInternalServerError, "Failed to update category")
+	if err := h.service.UpdateCategoryGroup(r.Context(), claims.UserID, id, request); err != nil {
+		writeAppError(w, err, http.StatusInternalServerError, "Failed to update category group")
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Category updated successfully")
+	writeSuccessMessage(w, http.StatusOK, "CategoryGroup updated successfully")
 }
 
-func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) DeleteCategoryGroup(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.UserClaimsFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "Unauthorized")
@@ -222,12 +168,80 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.service.DeleteCategory(r.Context(), claims.UserID, id); err != nil {
-		writeAppError(w, err, http.StatusInternalServerError, "Failed to delete category")
+	if err := h.service.DeleteCategoryGroup(r.Context(), claims.UserID, id); err != nil {
+		writeAppError(w, err, http.StatusInternalServerError, "Failed to delete category group")
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Category deleted successfully")
+	writeSuccessMessage(w, http.StatusOK, "CategoryGroup deleted successfully")
+}
+
+func (h *Handler) CreateCategoryOption(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.UserClaimsFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	var request CategoryOptionInput
+	if err := legacy.DecodeJSON(r, &request); err != nil {
+		writeAppError(w, err, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	createdID, err := h.service.CreateCategoryOption(r.Context(), claims.UserID, request)
+	if err != nil {
+		writeAppError(w, err, http.StatusInternalServerError, "Failed to create category option")
+		return
+	}
+
+	writeSuccessData(w, http.StatusCreated, map[string]int64{"id": createdID})
+}
+
+func (h *Handler) UpdateCategoryOption(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.UserClaimsFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	id, ok := parseIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+
+	var request CategoryOptionInput
+	if err := legacy.DecodeJSON(r, &request); err != nil {
+		writeAppError(w, err, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := h.service.UpdateCategoryOption(r.Context(), claims.UserID, id, request); err != nil {
+		writeAppError(w, err, http.StatusInternalServerError, "Failed to update category option")
+		return
+	}
+
+	writeSuccessMessage(w, http.StatusOK, "CategoryOption updated successfully")
+}
+
+func (h *Handler) DeleteCategoryOption(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.UserClaimsFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	id, ok := parseIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+
+	if err := h.service.DeleteCategoryOption(r.Context(), claims.UserID, id); err != nil {
+		writeAppError(w, err, http.StatusInternalServerError, "Failed to delete category option")
+		return
+	}
+
+	writeSuccessMessage(w, http.StatusOK, "CategoryOption deleted successfully")
 }
 
 func (h *Handler) GetEntries(w http.ResponseWriter, r *http.Request) {
@@ -273,7 +287,7 @@ func (h *Handler) CreateEntry(w http.ResponseWriter, r *http.Request) {
 	writeSuccessData(w, http.StatusCreated, map[string]int64{"id": createdID})
 }
 
-func (h *Handler) UpdateEntry(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) UpdateEntryTime(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.UserClaimsFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "Unauthorized")
@@ -285,18 +299,44 @@ func (h *Handler) UpdateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var request EntryInput
+	var request EntryTimeInput
 	if err := legacy.DecodeJSON(r, &request); err != nil {
 		writeAppError(w, err, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	if err := h.service.UpdateEntry(r.Context(), claims.UserID, id, request); err != nil {
-		writeAppError(w, err, http.StatusInternalServerError, "Failed to update entry")
+	if err := h.service.UpdateEntryTime(r.Context(), claims.UserID, id, request); err != nil {
+		writeAppError(w, err, http.StatusInternalServerError, "Failed to update entry time")
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Entry updated successfully")
+	writeSuccessMessage(w, http.StatusOK, "Entry time updated successfully")
+}
+
+func (h *Handler) UpdateEntrySelection(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.UserClaimsFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	id, ok := parseIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+
+	var request EntrySelectionInput
+	if err := legacy.DecodeJSON(r, &request); err != nil {
+		writeAppError(w, err, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := h.service.UpdateEntrySelection(r.Context(), claims.UserID, id, request); err != nil {
+		writeAppError(w, err, http.StatusInternalServerError, "Failed to update entry selection")
+		return
+	}
+
+	writeSuccessMessage(w, http.StatusOK, "Entry selection updated successfully")
 }
 
 func (h *Handler) DeleteEntry(w http.ResponseWriter, r *http.Request) {
