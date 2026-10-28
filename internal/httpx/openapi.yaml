@@ -24,14 +24,14 @@ tags:
   - name: money
   - name: metrics
 paths:
-  /health:
+  /api/health:
     get:
       tags: [ops]
       summary: Liveness probe
       security: []
       responses:
         '200': { $ref: '#/components/responses/Status' }
-  /readiness:
+  /api/readiness:
     get:
       tags: [ops]
       summary: Readiness probe, pings the database
@@ -39,7 +39,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/Status' }
         '503': { $ref: '#/components/responses/Status' }
-  /build-info:
+  /api/build-info:
     get:
       tags: [ops]
       summary: Commit, build time, Go version and APP_ENV of the running binary

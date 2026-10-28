@@ -130,9 +130,9 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger, clk clo
 	jobRuntime.Start()
 
 	router := chiRouter(logger, observer, cfg.MaxRequestBodyBytes, cfg.MaxMultipartBodyBytes)
-	router.Get("/health", HealthHandler())
-	router.Get("/readiness", ReadinessHandler(db.PingContext))
-	router.Get("/build-info", BuildInfoHandler(cfg))
+	router.Get("/api/health", HealthHandler())
+	router.Get("/api/readiness", ReadinessHandler(db.PingContext))
+	router.Get("/api/build-info", BuildInfoHandler(cfg))
 	router.Get("/api/debug/commit-info", CommitInfoHandler(cfg))
 
 	auth.RegisterRoutes(router, authModule.handler)

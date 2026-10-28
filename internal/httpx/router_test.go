@@ -86,17 +86,17 @@ func TestOpsRoutes(t *testing.T) {
 	server := httptest.NewServer(app.Handler)
 	defer server.Close()
 
-	assertStatus(t, server.URL+"/health", http.StatusOK, "ok")
-	assertStatus(t, server.URL+"/readiness", http.StatusOK, "ready")
+	assertStatus(t, server.URL+"/api/health", http.StatusOK, "ok")
+	assertStatus(t, server.URL+"/api/readiness", http.StatusOK, "ready")
 
-	resp, err := http.Get(server.URL + "/build-info")
+	resp, err := http.Get(server.URL + "/api/build-info")
 	if err != nil {
-		t.Fatalf("GET /build-info error = %v", err)
+		t.Fatalf("GET /api/build-info error = %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("/build-info status = %d, want 200", resp.StatusCode)
+		t.Fatalf("/api/build-info status = %d, want 200", resp.StatusCode)
 	}
 
 	var body BuildInfoResponse

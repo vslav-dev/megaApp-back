@@ -129,13 +129,13 @@ func TestLegacyFixtureProdLikeStartupWorks(t *testing.T) {
 	server := httptest.NewServer(app.Handler)
 	defer server.Close()
 
-	response, err := http.Get(server.URL + "/health")
+	response, err := http.Get(server.URL + "/api/health")
 	if err != nil {
-		t.Fatalf("GET /health error = %v", err)
+		t.Fatalf("GET /api/health error = %v", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("GET /health status = %d, want 200", response.StatusCode)
+		t.Fatalf("GET /api/health status = %d, want 200", response.StatusCode)
 	}
 }
 
