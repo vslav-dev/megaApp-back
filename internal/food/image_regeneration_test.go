@@ -231,6 +231,20 @@ func waitFor(t *testing.T, description string, condition func() bool) {
 	}
 }
 
+// waitForFirstImage waits for the announcement and then for the pipeline to free the product's
+// queue slot, which it does right after announcing: a request sent in between is answered
+// already_queued.
+func waitForFirstImage(t *testing.T, pipeline testPipeline) {
+	t.Helper()
+
+	waitFor(t, "first image", func() bool { generated, _ := pipeline.realtime.counts(); return generated == 1 })
+	waitFor(t, "queue slot release", func() bool {
+		pipeline.mu.Lock()
+		defer pipeline.mu.Unlock()
+		return len(pipeline.queue) == 0
+	})
+}
+
 func fileExists(t *testing.T, dir string, name string) bool {
 	t.Helper()
 
@@ -245,7 +259,7 @@ func TestPipelineReplacesImageAndRemovesOldVersionAfterSuccess(t *testing.T) {
 	if got := pipeline.RequestProductImageGeneration(7, "Egg yolk", "yolk", false); got != ImageRequestQueued {
 		t.Fatalf("first request = %q, want queued", got)
 	}
-	waitFor(t, "first image", func() bool { generated, _ := pipeline.realtime.counts(); return generated == 1 })
+	waitForFirstImage(t, pipeline)
 	if !fileExists(t, pipeline.store.FoodDir(), "7-thumb-v1.webp") {
 		t.Fatal("version 1 thumbnail is missing")
 	}
@@ -276,7 +290,7 @@ func TestPipelineKeepsExistingImageWhenReplacementFails(t *testing.T) {
 	pipeline := newTestPipeline(t, generator, 2, time.Millisecond)
 
 	pipeline.RequestProductImageGeneration(7, "Egg yolk", "yolk", false)
-	waitFor(t, "first image", func() bool { generated, _ := pipeline.realtime.counts(); return generated == 1 })
+	waitForFirstImage(t, pipeline)
 
 	generator.failing.Store(true)
 	pipeline.RequestProductImageGeneration(7, "Egg yolk", "yolk", true)

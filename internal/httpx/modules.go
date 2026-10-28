@@ -176,6 +176,11 @@ func buildBackupModule(db sqlite.WriteDB, cfg config.Config, logger *slog.Logger
 
 func buildMetricsModule(cfg config.Config, logger *slog.Logger, hub *ws.Hub, authService *auth.Service, clk clockplatform.Clock, runtime *jobs.Runtime) (metricsModule, error) {
 	service := metrics.NewService(cfg.MetricsServiceKey, clk, authService)
+	// Disabled (the test server): counters stay in memory and are never flushed, nothing is pushed
+	// to or polled from Flatline, and the history route is not registered.
+	if !cfg.MetricsEnabled {
+		return metricsModule{service: service}, nil
+	}
 	realtime := metrics.NewRealtime(hub)
 	hub.RegisterDisconnectHandler(realtime.Unsubscribe)
 	flatlineClient := metrics.NewFlatlineClient(cfg.FlatlineBaseURL, cfg.FlatlinePushTimeout)

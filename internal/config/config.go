@@ -63,6 +63,7 @@ type Config struct {
 	BackupStorageAccessKeyID            string
 	BackupStorageSecretAccessKey        string
 	BackupOperationTimeout              time.Duration
+	MetricsEnabled                      bool
 	MetricsServiceKey                   string
 	FlatlineBaseURL                     string
 	FlatlinePushTimeout                 time.Duration
@@ -124,6 +125,7 @@ func Load() (Config, error) {
 		BackupStorageClass:           getString("BACKUP_STORAGE_STORAGE_CLASS", ""),
 		BackupStorageAccessKeyID:     getString("BACKUP_STORAGE_ACCESS_KEY_ID", ""),
 		BackupStorageSecretAccessKey: getString("BACKUP_STORAGE_SECRET_ACCESS_KEY", ""),
+		MetricsEnabled:               getBool("METRICS_ENABLED", true),
 		MetricsServiceKey:            getString("METRICS_SERVICE_KEY", "megaapp"),
 		FlatlineBaseURL:              getString("FLATLINE_BASE_URL", ""),
 		BuildCommit:                  buildCommit,
@@ -457,20 +459,22 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.MetricsServiceKey) == "" {
 		return fmt.Errorf("validate config: METRICS_SERVICE_KEY is required")
 	}
-	if strings.TrimSpace(c.FlatlineBaseURL) == "" {
-		return fmt.Errorf("validate config: FLATLINE_BASE_URL is required")
-	}
-	if c.FlatlinePushTimeout <= 0 {
-		return fmt.Errorf("validate config: FLATLINE_PUSH_TIMEOUT_SECONDS must be greater than 0")
-	}
-	if c.FlatlinePollInterval <= 0 {
-		return fmt.Errorf("validate config: FLATLINE_POLL_INTERVAL_SECONDS must be greater than 0")
-	}
-	if c.FlatlinePollInitialLookback <= 0 {
-		return fmt.Errorf("validate config: FLATLINE_POLL_INITIAL_LOOKBACK_SECONDS must be greater than 0")
-	}
-	if c.FlatlinePollMaxCatchUp <= 0 {
-		return fmt.Errorf("validate config: FLATLINE_POLL_MAX_CATCHUP_SECONDS must be greater than 0")
+	if c.MetricsEnabled {
+		if strings.TrimSpace(c.FlatlineBaseURL) == "" {
+			return fmt.Errorf("validate config: FLATLINE_BASE_URL is required")
+		}
+		if c.FlatlinePushTimeout <= 0 {
+			return fmt.Errorf("validate config: FLATLINE_PUSH_TIMEOUT_SECONDS must be greater than 0")
+		}
+		if c.FlatlinePollInterval <= 0 {
+			return fmt.Errorf("validate config: FLATLINE_POLL_INTERVAL_SECONDS must be greater than 0")
+		}
+		if c.FlatlinePollInitialLookback <= 0 {
+			return fmt.Errorf("validate config: FLATLINE_POLL_INITIAL_LOOKBACK_SECONDS must be greater than 0")
+		}
+		if c.FlatlinePollMaxCatchUp <= 0 {
+			return fmt.Errorf("validate config: FLATLINE_POLL_MAX_CATCHUP_SECONDS must be greater than 0")
+		}
 	}
 	if c.BackupJobEnabled && !c.BackupStorageEnabled {
 		return fmt.Errorf("validate config: BACKUP_STORAGE_ENABLED must be true when BACKUP_JOB_ENABLED is true")
