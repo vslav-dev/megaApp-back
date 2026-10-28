@@ -7,10 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+
+	"megaapp-back/internal/platform/sqlite"
 )
 
 type Repository struct {
-	db *sql.DB
+	db    *sql.DB
+	write sqlite.WriteDB
 }
 
 type txRunner interface {
@@ -18,8 +21,8 @@ type txRunner interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-func NewRepository(db *sql.DB) *Repository {
-	return &Repository{db: db}
+func NewRepository(read *sql.DB, write sqlite.WriteDB) *Repository {
+	return &Repository{db: read, write: write}
 }
 
 func (r *Repository) ListOrganizations(ctx context.Context, userID int64) ([]Organization, error) {
@@ -82,7 +85,7 @@ func (r *Repository) CountAccountsByOrganization(ctx context.Context, userID int
 }
 
 func (r *Repository) CreateOrganization(ctx context.Context, userID int64, input OrganizationInput) (int64, error) {
-	result, err := r.db.ExecContext(ctx, `
+	result, err := r.write.ExecContext(ctx, `
 		INSERT INTO moneyOrganization (title, logoBase64, userId)
 		VALUES (?, ?, ?)
 	`, input.Title, valueOrNil(input.LogoBase64), userID)
@@ -97,7 +100,7 @@ func (r *Repository) CreateOrganization(ctx context.Context, userID int64, input
 }
 
 func (r *Repository) UpdateOrganization(ctx context.Context, userID int64, organizationID int64, input OrganizationInput) error {
-	_, err := r.db.ExecContext(ctx, `
+	_, err := r.write.ExecContext(ctx, `
 		UPDATE moneyOrganization
 		SET title = ?, logoBase64 = ?
 		WHERE id = ? AND userId = ?
@@ -109,7 +112,7 @@ func (r *Repository) UpdateOrganization(ctx context.Context, userID int64, organ
 }
 
 func (r *Repository) DeleteOrganization(ctx context.Context, userID int64, organizationID int64) error {
-	_, err := r.db.ExecContext(ctx, `
+	_, err := r.write.ExecContext(ctx, `
 		DELETE FROM moneyOrganization
 		WHERE id = ? AND userId = ?
 	`, organizationID, userID)
@@ -179,7 +182,7 @@ func (r *Repository) CountAccountsByCurrency(ctx context.Context, userID int64, 
 }
 
 func (r *Repository) CreateCurrency(ctx context.Context, userID int64, input CurrencyInput) (int64, error) {
-	result, err := r.db.ExecContext(ctx, `
+	result, err := r.write.ExecContext(ctx, `
 		INSERT INTO moneyCurrency (title, ticker, symbol, symbolPosEnum, whitespace, userId)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`, input.Title, input.Ticker, input.Symbol, input.SymbolPosEnum, boolToInt64(input.Whitespace), userID)
@@ -194,7 +197,7 @@ func (r *Repository) CreateCurrency(ctx context.Context, userID int64, input Cur
 }
 
 func (r *Repository) UpdateCurrency(ctx context.Context, userID int64, currencyID int64, input CurrencyInput) error {
-	_, err := r.db.ExecContext(ctx, `
+	_, err := r.write.ExecContext(ctx, `
 		UPDATE moneyCurrency
 		SET title = ?, ticker = ?, symbol = ?, symbolPosEnum = ?, whitespace = ?
 		WHERE id = ? AND userId = ?
@@ -206,7 +209,7 @@ func (r *Repository) UpdateCurrency(ctx context.Context, userID int64, currencyI
 }
 
 func (r *Repository) DeleteCurrency(ctx context.Context, userID int64, currencyID int64) error {
-	_, err := r.db.ExecContext(ctx, `
+	_, err := r.write.ExecContext(ctx, `
 		DELETE FROM moneyCurrency
 		WHERE id = ? AND userId = ?
 	`, currencyID, userID)
@@ -218,7 +221,7 @@ func (r *Repository) DeleteCurrency(ctx context.Context, userID int64, currencyI
 
 func (r *Repository) ListCategories(ctx context.Context, userID int64) ([]Category, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, name, parentId, categoryType
+		SELECT id, name, parentId, categoryType, hiddenOnCharts, hue, lightness, saturation
 		FROM moneyCategories
 		WHERE userId = ?
 		ORDER BY categoryType ASC, parentId ASC, name ASC
@@ -230,12 +233,10 @@ func (r *Repository) ListCategories(ctx context.Context, userID int64) ([]Catego
 
 	var result []Category
 	for rows.Next() {
-		var item Category
-		var parentID sql.NullInt64
-		if err := rows.Scan(&item.ID, &item.Name, &parentID, &item.CategoryType); err != nil {
+		item, err := scanCategory(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan category: %w", err)
 		}
-		item.ParentID = nullableInt64(parentID)
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -246,20 +247,18 @@ func (r *Repository) ListCategories(ctx context.Context, userID int64) ([]Catego
 
 func (r *Repository) GetCategoryByID(ctx context.Context, userID int64, categoryID int64) (*Category, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, name, parentId, categoryType
+		SELECT id, name, parentId, categoryType, hiddenOnCharts, hue, lightness, saturation
 		FROM moneyCategories
 		WHERE id = ? AND userId = ?
 	`, categoryID, userID)
 
-	var item Category
-	var parentID sql.NullInt64
-	if err := row.Scan(&item.ID, &item.Name, &parentID, &item.CategoryType); err != nil {
+	item, err := scanCategory(row)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get category: %w", err)
 	}
-	item.ParentID = nullableInt64(parentID)
 	return &item, nil
 }
 
@@ -288,10 +287,10 @@ func (r *Repository) CountTransactionsByCategory(ctx context.Context, userID int
 }
 
 func (r *Repository) CreateCategory(ctx context.Context, userID int64, input CategoryInput) (int64, error) {
-	result, err := r.db.ExecContext(ctx, `
-		INSERT INTO moneyCategories (name, categoryType, userId, parentId)
-		VALUES (?, ?, ?, ?)
-	`, input.Name, input.CategoryType, userID, nullableValue(input.ParentID))
+	result, err := r.write.ExecContext(ctx, `
+		INSERT INTO moneyCategories (name, categoryType, userId, parentId, hiddenOnCharts, hue, lightness, saturation)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, input.Name, input.CategoryType, userID, nullableValue(input.ParentID), boolToInt64(input.HiddenOnCharts), nullableValue(input.Hue), nullableValue(input.Lightness), nullableValue(input.Saturation))
 	if err != nil {
 		return 0, fmt.Errorf("create category: %w", err)
 	}
@@ -303,11 +302,11 @@ func (r *Repository) CreateCategory(ctx context.Context, userID int64, input Cat
 }
 
 func (r *Repository) UpdateCategory(ctx context.Context, userID int64, categoryID int64, input CategoryInput) error {
-	_, err := r.db.ExecContext(ctx, `
+	_, err := r.write.ExecContext(ctx, `
 		UPDATE moneyCategories
-		SET name = ?, categoryType = ?, parentId = ?
+		SET name = ?, categoryType = ?, parentId = ?, hiddenOnCharts = ?, hue = ?, lightness = ?, saturation = ?
 		WHERE id = ? AND userId = ?
-	`, input.Name, input.CategoryType, nullableValue(input.ParentID), categoryID, userID)
+	`, input.Name, input.CategoryType, nullableValue(input.ParentID), boolToInt64(input.HiddenOnCharts), nullableValue(input.Hue), nullableValue(input.Lightness), nullableValue(input.Saturation), categoryID, userID)
 	if err != nil {
 		return fmt.Errorf("update category: %w", err)
 	}
@@ -315,7 +314,7 @@ func (r *Repository) UpdateCategory(ctx context.Context, userID int64, categoryI
 }
 
 func (r *Repository) DeleteCategory(ctx context.Context, userID int64, categoryID int64) error {
-	_, err := r.db.ExecContext(ctx, `
+	_, err := r.write.ExecContext(ctx, `
 		DELETE FROM moneyCategories
 		WHERE id = ? AND userId = ?
 	`, categoryID, userID)
@@ -405,7 +404,7 @@ func (r *Repository) CountAssetsByAccount(ctx context.Context, userID int64, acc
 }
 
 func (r *Repository) CreateAccount(ctx context.Context, userID int64, input AccountInput) (int64, error) {
-	result, err := r.db.ExecContext(ctx, `
+	result, err := r.write.ExecContext(ctx, `
 		INSERT INTO moneyAccount (title, currencyId, isInvest, isArchived, kind, organizationId, userId)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, input.Title, input.CurrencyID, boolToInt64(input.IsInvest), boolToInt64(input.IsArchived), input.Kind, nullableValue(input.OrganizationID), userID)
@@ -420,7 +419,7 @@ func (r *Repository) CreateAccount(ctx context.Context, userID int64, input Acco
 }
 
 func (r *Repository) UpdateAccount(ctx context.Context, userID int64, accountID int64, input AccountInput) error {
-	_, err := r.db.ExecContext(ctx, `
+	_, err := r.write.ExecContext(ctx, `
 		UPDATE moneyAccount
 		SET title = ?, currencyId = ?, isInvest = ?, isArchived = ?, kind = ?, organizationId = ?
 		WHERE id = ? AND userId = ?
@@ -432,7 +431,7 @@ func (r *Repository) UpdateAccount(ctx context.Context, userID int64, accountID 
 }
 
 func (r *Repository) DeleteAccount(ctx context.Context, userID int64, accountID int64) error {
-	_, err := r.db.ExecContext(ctx, `
+	_, err := r.write.ExecContext(ctx, `
 		DELETE FROM moneyAccount
 		WHERE id = ? AND userId = ?
 	`, accountID, userID)
@@ -530,7 +529,7 @@ func (r *Repository) ListLinkedTransactionAccountIDsByAsset(ctx context.Context,
 }
 
 func (r *Repository) CreateAsset(ctx context.Context, userID int64, input AssetInput) (int64, error) {
-	result, err := r.db.ExecContext(ctx, `
+	result, err := r.write.ExecContext(ctx, `
 		INSERT INTO moneyAsset (title, ticker, type, accountIdsJSON, suspendedSince, suspendedUntil, userId)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, input.Title, input.Ticker, input.Type, marshalAccountIDs(input.AccountIDs), valueOrNil(input.SuspendedSince), valueOrNil(input.SuspendedUntil), userID)
@@ -545,7 +544,7 @@ func (r *Repository) CreateAsset(ctx context.Context, userID int64, input AssetI
 }
 
 func (r *Repository) UpdateAsset(ctx context.Context, userID int64, assetID int64, input AssetInput) error {
-	_, err := r.db.ExecContext(ctx, `
+	_, err := r.write.ExecContext(ctx, `
 		UPDATE moneyAsset
 		SET title = ?, ticker = ?, type = ?, accountIdsJSON = ?, suspendedSince = ?, suspendedUntil = ?
 		WHERE id = ? AND userId = ?
@@ -557,7 +556,7 @@ func (r *Repository) UpdateAsset(ctx context.Context, userID int64, assetID int6
 }
 
 func (r *Repository) DeleteAsset(ctx context.Context, userID int64, assetID int64) error {
-	_, err := r.db.ExecContext(ctx, `
+	_, err := r.write.ExecContext(ctx, `
 		DELETE FROM moneyAsset
 		WHERE id = ? AND userId = ?
 	`, assetID, userID)
@@ -569,7 +568,7 @@ func (r *Repository) DeleteAsset(ctx context.Context, userID int64, assetID int6
 
 func (r *Repository) ListTransactions(ctx context.Context, userID int64) ([]Transaction, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, dateISO, accountId, amount, categoryId, kind, isGift, notes, detailsJSON, twinId
+		SELECT id, dateISO, accountId, amount, categoryId, kind, isGift, notes, detailsJSON, twinId, ver
 		FROM moneyTransaction
 		WHERE userId = ?
 		ORDER BY dateISO DESC, id DESC
@@ -593,9 +592,9 @@ func (r *Repository) ListTransactions(ctx context.Context, userID int64) ([]Tran
 	return result, nil
 }
 
-func (r *Repository) GetTransactionByID(ctx context.Context, userID int64, transactionID int64) (*Transaction, error) {
-	row := r.db.QueryRowContext(ctx, `
-		SELECT id, dateISO, accountId, amount, categoryId, kind, isGift, notes, detailsJSON, twinId
+func (r *Repository) GetTransactionByID(ctx context.Context, runner txRunner, userID int64, transactionID int64) (*Transaction, error) {
+	row := runner.QueryRowContext(ctx, `
+		SELECT id, dateISO, accountId, amount, categoryId, kind, isGift, notes, detailsJSON, twinId, ver
 		FROM moneyTransaction
 		WHERE id = ? AND userId = ?
 	`, transactionID, userID)
@@ -610,21 +609,11 @@ func (r *Repository) GetTransactionByID(ctx context.Context, userID int64, trans
 	return &item, nil
 }
 
-func (r *Repository) CreateTransaction(ctx context.Context, userID int64, input TransactionInput) (int64, error) {
-	return createTransactionWithRunner(ctx, r.db, userID, input, input.StoredDetailsJSON)
+func (r *Repository) CreateTransaction(ctx context.Context, tx txRunner, userID int64, input TransactionInput) (int64, error) {
+	return createTransactionWithRunner(ctx, tx, userID, input, input.StoredDetailsJSON)
 }
 
-func (r *Repository) CreateTransferPair(ctx context.Context, userID int64, input TransactionInput) (CreateTransactionResult, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return CreateTransactionResult{}, fmt.Errorf("begin create transfer pair: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
+func (r *Repository) CreateTransferPair(ctx context.Context, tx txRunner, userID int64, input TransactionInput) (CreateTransactionResult, error) {
 	fromDetails := `{"direction":"out"}`
 	fromID, err := createTransactionWithRunner(ctx, tx, userID, input, &fromDetails)
 	if err != nil {
@@ -653,18 +642,15 @@ func (r *Repository) CreateTransferPair(ctx context.Context, userID int64, input
 		return CreateTransactionResult{}, err
 	}
 
-	if err = tx.Commit(); err != nil {
-		return CreateTransactionResult{}, fmt.Errorf("commit create transfer pair: %w", err)
-	}
-	return CreateTransactionResult{ID: fromID, TwinID: &toID}, nil
+	return CreateTransactionResult{ID: fromID, TwinID: &toID, Version: 1}, nil
 }
 
-func (r *Repository) UpdateTransaction(ctx context.Context, userID int64, transactionID int64, input TransactionInput) error {
-	result, err := r.db.ExecContext(ctx, `
+func (r *Repository) UpdateTransaction(ctx context.Context, tx txRunner, userID int64, transactionID int64, input TransactionInput, newVersion int64) error {
+	result, err := tx.ExecContext(ctx, `
 		UPDATE moneyTransaction
-		SET dateISO = ?, accountId = ?, amount = ?, categoryId = ?, kind = ?, isGift = ?, notes = ?, detailsJSON = ?
+		SET dateISO = ?, accountId = ?, amount = ?, categoryId = ?, kind = ?, isGift = ?, notes = ?, detailsJSON = ?, ver = ?
 		WHERE id = ? AND userId = ?
-	`, input.DateISO, input.AccountID, input.Amount, nullableValue(input.CategoryID), input.Kind, boolToInt64(input.IsGift), valueOrNil(input.Notes), createTransactionDetailsValue(input.StoredDetailsJSON), transactionID, userID)
+	`, input.DateISO, input.AccountID, input.Amount, nullableValue(input.CategoryID), input.Kind, boolToInt64(input.IsGift), valueOrNil(input.Notes), createTransactionDetailsValue(input.StoredDetailsJSON), newVersion, transactionID, userID)
 	if err != nil {
 		return fmt.Errorf("update transaction: %w", err)
 	}
@@ -678,32 +664,18 @@ func (r *Repository) UpdateTransaction(ctx context.Context, userID int64, transa
 	return nil
 }
 
-func (r *Repository) UpdateTransferPair(ctx context.Context, userID int64, fromID int64, toID int64, input TransactionInput) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin update transfer pair: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if err = updateTransferRowWithRunner(ctx, tx, userID, fromID, input.DateISO, input.Amount, input.Notes); err != nil {
+func (r *Repository) UpdateTransferPair(ctx context.Context, tx txRunner, userID int64, fromID int64, toID int64, input TransactionInput, fromNewVersion int64, toNewVersion int64) error {
+	if err := updateTransferRowWithRunner(ctx, tx, userID, fromID, input.DateISO, input.Amount, input.Notes, fromNewVersion); err != nil {
 		return err
 	}
-	if err = updateTransferRowWithRunner(ctx, tx, userID, toID, input.DateISO, *input.TwinAmount, input.Notes); err != nil {
+	if err := updateTransferRowWithRunner(ctx, tx, userID, toID, input.DateISO, *input.TwinAmount, input.Notes, toNewVersion); err != nil {
 		return err
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("commit update transfer pair: %w", err)
 	}
 	return nil
 }
 
-func (r *Repository) DeleteTransaction(ctx context.Context, userID int64, transactionID int64) error {
-	result, err := r.db.ExecContext(ctx, `
+func (r *Repository) DeleteTransaction(ctx context.Context, tx txRunner, userID int64, transactionID int64) error {
+	result, err := tx.ExecContext(ctx, `
 		DELETE FROM moneyTransaction
 		WHERE id = ? AND userId = ?
 	`, transactionID, userID)
@@ -813,6 +785,22 @@ func scanAsset(scanner interface{ Scan(dest ...any) error }) (Asset, error) {
 	return item, nil
 }
 
+func scanCategory(scanner interface{ Scan(dest ...any) error }) (Category, error) {
+	var item Category
+	var parentID sql.NullInt64
+	var hue, lightness, saturation sql.NullInt64
+	var hiddenOnCharts int64
+	if err := scanner.Scan(&item.ID, &item.Name, &parentID, &item.CategoryType, &hiddenOnCharts, &hue, &lightness, &saturation); err != nil {
+		return Category{}, err
+	}
+	item.ParentID = nullableInt64(parentID)
+	item.HiddenOnCharts = hiddenOnCharts != 0
+	item.Hue = nullableInt64(hue)
+	item.Lightness = nullableInt64(lightness)
+	item.Saturation = nullableInt64(saturation)
+	return item, nil
+}
+
 func scanTransaction(scanner interface{ Scan(dest ...any) error }) (Transaction, error) {
 	var item Transaction
 	var categoryID sql.NullInt64
@@ -820,7 +808,7 @@ func scanTransaction(scanner interface{ Scan(dest ...any) error }) (Transaction,
 	var notes sql.NullString
 	var detailsJSON sql.NullString
 	var twinID sql.NullInt64
-	if err := scanner.Scan(&item.ID, &item.DateISO, &item.AccountID, &item.Amount, &categoryID, &item.Kind, &isGift, &notes, &detailsJSON, &twinID); err != nil {
+	if err := scanner.Scan(&item.ID, &item.DateISO, &item.AccountID, &item.Amount, &categoryID, &item.Kind, &isGift, &notes, &detailsJSON, &twinID, &item.Version); err != nil {
 		return Transaction{}, err
 	}
 	item.CategoryID = nullableInt64(categoryID)
@@ -890,12 +878,12 @@ func updateTwinIDWithRunner(ctx context.Context, runner txRunner, userID int64, 
 	return nil
 }
 
-func updateTransferRowWithRunner(ctx context.Context, runner txRunner, userID int64, transactionID int64, dateISO string, amount float64, notes *string) error {
+func updateTransferRowWithRunner(ctx context.Context, runner txRunner, userID int64, transactionID int64, dateISO string, amount float64, notes *string, newVersion int64) error {
 	result, err := runner.ExecContext(ctx, `
 		UPDATE moneyTransaction
-		SET dateISO = ?, amount = ?, notes = ?
+		SET dateISO = ?, amount = ?, notes = ?, ver = ?
 		WHERE id = ? AND userId = ?
-	`, dateISO, amount, valueOrNil(notes), transactionID, userID)
+	`, dateISO, amount, valueOrNil(notes), newVersion, transactionID, userID)
 	if err != nil {
 		return fmt.Errorf("update transfer row: %w", err)
 	}

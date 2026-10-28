@@ -36,6 +36,7 @@ type WriteHandler struct {
 }
 
 type createDiaryEntryRequest struct {
+	OperationID     string         `json:"operationId"`
 	DateISO         string         `json:"dateISO"`
 	FoodCatalogueID int64          `json:"foodCatalogueId"`
 	FoodWeight      int64          `json:"foodWeight"`
@@ -43,19 +44,30 @@ type createDiaryEntryRequest struct {
 }
 
 type editDiaryEntryRequest struct {
-	ID              int64          `json:"id"`
-	FoodCatalogueID int64          `json:"foodCatalogueId"`
-	FoodWeight      int64          `json:"foodWeight"`
-	History         []HistoryEntry `json:"history"`
+	OperationID     string `json:"operationId"`
+	ID              int64  `json:"id"`
+	FoodCatalogueID int64  `json:"foodCatalogueId"`
+	FoodWeight      int64  `json:"foodWeight"`
+	HistoryAction   string `json:"historyAction"`
+}
+
+type deleteDiaryEntryRequest struct {
+	OperationID string `json:"operationId"`
+}
+
+type deleteDiaryDayRequest struct {
+	OperationID string `json:"operationId"`
 }
 
 type restoreDiaryDayRequest struct {
-	Entries []createDiaryEntryRequest `json:"entries"`
+	OperationID string                    `json:"operationId"`
+	Entries     []createDiaryEntryRequest `json:"entries"`
 }
 
 type bodyWeightRequest struct {
-	DateISO    string          `json:"dateISO"`
-	BodyWeight json.RawMessage `json:"bodyWeight"`
+	OperationID string          `json:"operationId"`
+	DateISO     string          `json:"dateISO"`
+	BodyWeight  json.RawMessage `json:"bodyWeight"`
 }
 
 func NewWriteHandler(service *Service, realtime RealtimePublisher, metricsRecorder MetricsRecorder) *WriteHandler {
@@ -87,17 +99,23 @@ func (h *WriteHandler) CreateDiaryEntry(w http.ResponseWriter, r *http.Request) 
 		legacy.WriteAppResultError(w, err, http.StatusBadRequest, "Invalid request body")
 		return
 	}
+	if request.OperationID == "" {
+		legacy.WriteResultError(w, http.StatusBadRequest, "operationId is required")
+		return
+	}
 
-	entry, err := h.service.CreateDiaryEntry(r.Context(), claims.UserID, request.DateISO, request.FoodCatalogueID, request.FoodWeight, request.History)
+	entry, applied, err := h.service.CreateDiaryEntry(r.Context(), claims.UserID, request.OperationID, request.DateISO, request.FoodCatalogueID, request.FoodWeight, request.History)
 	if err != nil {
 		legacy.WriteAppResultError(w, err, http.StatusInternalServerError, "Internal server error")
 		return
 	}
 
-	h.realtime.MarkUserUpdated(claims.UserID)
-	h.realtime.PublishDiaryEntryCreated(claims.UserID, entry, extractClientID(r))
-	h.recordMetric(MetricDiaryEntryCreated)
-	legacy.WriteJSON(w, http.StatusCreated, map[string]any{"result": true, "diaryId": entry.ID, "kcals": entry.Kcals})
+	if applied {
+		h.realtime.MarkUserUpdated(claims.UserID)
+		h.realtime.PublishDiaryEntryCreated(claims.UserID, entry, extractClientID(r))
+		h.recordMetric(MetricDiaryEntryCreated)
+	}
+	legacy.WriteJSON(w, http.StatusCreated, map[string]any{"result": true, "diaryId": entry.ID, "kcals": entry.Kcals, "version": entry.Version})
 }
 
 func (h *WriteHandler) EditDiaryEntry(w http.ResponseWriter, r *http.Request) {
@@ -112,12 +130,16 @@ func (h *WriteHandler) EditDiaryEntry(w http.ResponseWriter, r *http.Request) {
 		legacy.WriteAppResultError(w, err, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if len(request.History) == 0 {
-		legacy.WriteResultError(w, http.StatusBadRequest, "History is required")
+	if request.HistoryAction == "" {
+		legacy.WriteResultError(w, http.StatusBadRequest, "historyAction is required")
+		return
+	}
+	if request.OperationID == "" {
+		legacy.WriteResultError(w, http.StatusBadRequest, "operationId is required")
 		return
 	}
 
-	updatedEntry, err := h.service.EditDiaryEntry(r.Context(), claims.UserID, request.ID, request.FoodWeight, request.History[0])
+	updatedEntry, applied, err := h.service.EditDiaryEntry(r.Context(), claims.UserID, request.OperationID, request.ID, request.FoodWeight, request.HistoryAction)
 	if err != nil {
 		legacy.WriteAppResultError(w, err, http.StatusInternalServerError, "Internal server error")
 		return
@@ -127,10 +149,18 @@ func (h *WriteHandler) EditDiaryEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.realtime.MarkUserUpdated(claims.UserID)
-	h.realtime.PublishDiaryEntryUpdated(claims.UserID, *updatedEntry, request.History[0], extractClientID(r))
-	h.recordMetric(MetricDiaryEntryUpdated)
-	legacy.WriteJSON(w, http.StatusOK, map[string]any{"result": true, "diaryId": updatedEntry.ID, "kcals": updatedEntry.Kcals})
+	if applied && updatedEntry.AppliedHistoryEntry != nil {
+		h.realtime.MarkUserUpdated(claims.UserID)
+		h.realtime.PublishDiaryEntryUpdated(claims.UserID, *updatedEntry, *updatedEntry.AppliedHistoryEntry, extractClientID(r))
+		h.recordMetric(MetricDiaryEntryUpdated)
+	}
+	legacy.WriteJSON(w, http.StatusOK, map[string]any{
+		"result":              true,
+		"diaryId":             updatedEntry.ID,
+		"kcals":               updatedEntry.Kcals,
+		"version":             updatedEntry.Version,
+		"appliedHistoryEntry": updatedEntry.AppliedHistoryEntry,
+	})
 }
 
 func (h *WriteHandler) DeleteDiaryEntry(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +176,17 @@ func (h *WriteHandler) DeleteDiaryEntry(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	deleted, err := h.service.DeleteDiaryEntry(r.Context(), claims.UserID, diaryID)
+	var request deleteDiaryEntryRequest
+	if err := legacy.DecodeJSON(r, &request); err != nil {
+		legacy.WriteAppResultError(w, err, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if request.OperationID == "" {
+		legacy.WriteResultError(w, http.StatusBadRequest, "operationId is required")
+		return
+	}
+
+	deleted, applied, err := h.service.DeleteDiaryEntry(r.Context(), claims.UserID, request.OperationID, diaryID)
 	if err != nil {
 		legacy.WriteAppResultError(w, err, http.StatusInternalServerError, "Internal server error")
 		return
@@ -156,9 +196,11 @@ func (h *WriteHandler) DeleteDiaryEntry(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	h.realtime.MarkUserUpdated(claims.UserID)
-	h.realtime.PublishDiaryEntryDeleted(claims.UserID, diaryID, extractClientID(r))
-	h.recordMetric(MetricDiaryEntryDeleted)
+	if applied {
+		h.realtime.MarkUserUpdated(claims.UserID)
+		h.realtime.PublishDiaryEntryDeleted(claims.UserID, diaryID, extractClientID(r))
+		h.recordMetric(MetricDiaryEntryDeleted)
+	}
 	legacy.WriteJSON(w, http.StatusOK, map[string]any{"result": true})
 }
 
@@ -170,15 +212,28 @@ func (h *WriteHandler) DeleteDiaryEntriesForDay(w http.ResponseWriter, r *http.R
 	}
 
 	dateISO := chi.URLParam(r, "dateISO")
-	deletedCount, err := h.service.DeleteDiaryEntriesForDay(r.Context(), claims.UserID, dateISO)
+
+	var request deleteDiaryDayRequest
+	if err := legacy.DecodeJSON(r, &request); err != nil {
+		legacy.WriteAppResultError(w, err, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if request.OperationID == "" {
+		legacy.WriteResultError(w, http.StatusBadRequest, "operationId is required")
+		return
+	}
+
+	deletedCount, applied, err := h.service.DeleteDiaryEntriesForDay(r.Context(), claims.UserID, request.OperationID, dateISO)
 	if err != nil {
 		legacy.WriteAppResultError(w, err, http.StatusInternalServerError, "Internal server error")
 		return
 	}
 
-	h.realtime.MarkUserUpdated(claims.UserID)
-	h.realtime.PublishDiaryDayDeleted(claims.UserID, dateISO, extractClientID(r))
-	h.recordMetric(MetricDiaryDayDeleted)
+	if applied {
+		h.realtime.MarkUserUpdated(claims.UserID)
+		h.realtime.PublishDiaryDayDeleted(claims.UserID, dateISO, extractClientID(r))
+		h.recordMetric(MetricDiaryDayDeleted)
+	}
 	legacy.WriteJSON(w, http.StatusOK, map[string]any{"result": true, "deletedEntriesCount": deletedCount})
 }
 
@@ -195,6 +250,10 @@ func (h *WriteHandler) RestoreDiaryEntriesForDay(w http.ResponseWriter, r *http.
 		legacy.WriteAppResultError(w, err, http.StatusBadRequest, "Invalid request body")
 		return
 	}
+	if request.OperationID == "" {
+		legacy.WriteResultError(w, http.StatusBadRequest, "operationId is required")
+		return
+	}
 
 	inputs := make([]RestoreDiaryEntryInput, 0, len(request.Entries))
 	for _, entry := range request.Entries {
@@ -205,18 +264,20 @@ func (h *WriteHandler) RestoreDiaryEntriesForDay(w http.ResponseWriter, r *http.
 		})
 	}
 
-	entries, err := h.service.RestoreDiaryEntriesForDay(r.Context(), claims.UserID, dateISO, inputs)
+	entries, applied, err := h.service.RestoreDiaryEntriesForDay(r.Context(), claims.UserID, request.OperationID, dateISO, inputs)
 	if err != nil {
 		legacy.WriteAppResultError(w, err, http.StatusInternalServerError, "Internal server error")
 		return
 	}
 
-	h.realtime.MarkUserUpdated(claims.UserID)
-	clientID := extractClientID(r)
-	for _, entry := range entries {
-		h.realtime.PublishDiaryEntryCreated(claims.UserID, entry, clientID)
+	if applied {
+		h.realtime.MarkUserUpdated(claims.UserID)
+		clientID := extractClientID(r)
+		for _, entry := range entries {
+			h.realtime.PublishDiaryEntryCreated(claims.UserID, entry, clientID)
+		}
+		h.recordMetric(MetricDiaryDayRestored)
 	}
-	h.recordMetric(MetricDiaryDayRestored)
 	legacy.WriteJSON(w, http.StatusCreated, map[string]any{"result": true, "diaryEntries": entries})
 }
 
@@ -232,6 +293,10 @@ func (h *WriteHandler) ProcessWeight(w http.ResponseWriter, r *http.Request) {
 		legacy.WriteAppResultError(w, err, http.StatusBadRequest, "Invalid request body")
 		return
 	}
+	if request.OperationID == "" {
+		legacy.WriteResultError(w, http.StatusBadRequest, "operationId is required")
+		return
+	}
 
 	bodyWeight, err := parseBodyWeight(request.BodyWeight)
 	if err != nil {
@@ -239,7 +304,7 @@ func (h *WriteHandler) ProcessWeight(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	okResult, err := h.service.SetBodyWeight(r.Context(), claims.UserID, request.DateISO, bodyWeight)
+	okResult, applied, err := h.service.SetBodyWeight(r.Context(), claims.UserID, request.OperationID, request.DateISO, bodyWeight)
 	if err != nil {
 		legacy.WriteAppResultError(w, err, http.StatusInternalServerError, "Internal server error")
 		return
@@ -249,9 +314,11 @@ func (h *WriteHandler) ProcessWeight(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.realtime.MarkUserUpdated(claims.UserID)
-	h.realtime.PublishBodyWeightUpdated(claims.UserID, request.DateISO, bodyWeight, extractClientID(r))
-	h.recordMetric(MetricBodyWeightUpdated)
+	if applied {
+		h.realtime.MarkUserUpdated(claims.UserID)
+		h.realtime.PublishBodyWeightUpdated(claims.UserID, request.DateISO, bodyWeight, extractClientID(r))
+		h.recordMetric(MetricBodyWeightUpdated)
+	}
 	legacy.WriteJSON(w, http.StatusCreated, map[string]any{"result": true})
 }
 

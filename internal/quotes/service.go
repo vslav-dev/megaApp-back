@@ -51,7 +51,8 @@ func (s *Service) Run(ctx context.Context) (RunResult, error) {
 		ratesMap[row.DateISO] = rates
 	}
 
-	var errorsList []string
+	var failures []TickerFailure
+	var degraded []TickerFailure
 	retry := RetryConfig{Attempts: s.cfg.RetryAttempts, Delay: s.cfg.RetryDelay}
 
 	currencyTickers, err := s.repo.ListCurrencyTickers(ctx)
@@ -59,14 +60,13 @@ func (s *Service) Run(ctx context.Context) (RunResult, error) {
 		return RunResult{}, err
 	}
 	if len(currencyTickers) > 0 {
-		currencyRates, errored, err := s.currencyBatch(currencyTickers).Fetch(ctx, fromISO, toISO, retry)
+		currencyRates, currencyOutcome, err := s.currencyBatch(currencyTickers).Fetch(ctx, fromISO, toISO, retry)
 		if err != nil {
 			return RunResult{}, err
 		}
 		mergeRatesMap(ratesMap, currencyRates)
-		for _, ticker := range errored {
-			errorsList = append(errorsList, "currency:"+ticker)
-		}
+		failures = append(failures, currencyOutcome.Failures...)
+		degraded = append(degraded, currencyOutcome.Degraded...)
 	}
 
 	openAssets, err := s.repo.ListOpenAssets(ctx)
@@ -76,36 +76,33 @@ func (s *Service) Run(ctx context.Context) (RunResult, error) {
 	cryptoAssets, stockAssets, bondAssets := splitAssetsByType(openAssets)
 
 	if len(cryptoAssets) > 0 {
-		cryptoRates, errored, err := s.cryptoBatch(cryptoAssets).Fetch(ctx, fromISO, toISO, retry)
+		cryptoRates, cryptoOutcome, err := s.cryptoBatch(cryptoAssets).Fetch(ctx, fromISO, toISO, retry)
 		if err != nil {
 			return RunResult{}, err
 		}
 		mergeRatesMap(ratesMap, cryptoRates)
-		for _, ticker := range errored {
-			errorsList = append(errorsList, "crypto:"+ticker)
-		}
+		failures = append(failures, cryptoOutcome.Failures...)
+		degraded = append(degraded, cryptoOutcome.Degraded...)
 	}
 
 	rubUSDRates := collectTickerRates(ratesMap, "RUB")
 	if len(stockAssets) > 0 {
-		stockRates, errored, err := s.stockBatchWithRates(stockAssets, rubUSDRates).Fetch(ctx, fromISO, toISO, retry)
+		stockRates, stockOutcome, err := s.stockBatchWithRates(stockAssets, rubUSDRates).Fetch(ctx, fromISO, toISO, retry)
 		if err != nil {
 			return RunResult{}, err
 		}
 		mergeRatesMap(ratesMap, stockRates)
-		for _, ticker := range errored {
-			errorsList = append(errorsList, "stock:"+ticker)
-		}
+		failures = append(failures, stockOutcome.Failures...)
+		degraded = append(degraded, stockOutcome.Degraded...)
 	}
 	if len(bondAssets) > 0 {
-		bondRates, errored, err := s.bondBatchWithRates(bondAssets, rubUSDRates).Fetch(ctx, fromISO, toISO, retry)
+		bondRates, bondOutcome, err := s.bondBatchWithRates(bondAssets, rubUSDRates).Fetch(ctx, fromISO, toISO, retry)
 		if err != nil {
 			return RunResult{}, err
 		}
 		mergeRatesMap(ratesMap, bondRates)
-		for _, ticker := range errored {
-			errorsList = append(errorsList, "bond:"+ticker)
-		}
+		failures = append(failures, bondOutcome.Failures...)
+		degraded = append(degraded, bondOutcome.Degraded...)
 	}
 
 	dates := make([]string, 0, len(ratesMap))
@@ -129,7 +126,7 @@ func (s *Service) Run(ctx context.Context) (RunResult, error) {
 		upsertedCount++
 	}
 
-	return RunResult{UpsertedCount: upsertedCount, FromISO: fromISO, ToISO: toISO, Errors: errorsList}, nil
+	return RunResult{UpsertedCount: upsertedCount, FromISO: fromISO, ToISO: toISO, Failures: failures, Degraded: degraded}, nil
 }
 
 func (s *Service) buildDateRange() (string, string) {

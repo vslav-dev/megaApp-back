@@ -16,10 +16,8 @@ func TestLoadUsesDefaults(t *testing.T) {
 	t.Setenv("MIGRATIONS_DIR", "")
 	t.Setenv("PUBLIC_DIR", "")
 	t.Setenv("BACKUPS_DIR", "")
-	t.Setenv("JWT_SECRET", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	t.Setenv("OPENROUTER_MODEL", "")
-	t.Setenv("OPENROUTER_VISION_MODEL", "")
 	t.Setenv("OPENROUTER_IMAGE_MODEL", "")
 	t.Setenv("OPENROUTER_TIMEOUT_SECONDS", "")
 	t.Setenv("OPENAI_API_KEY", "")
@@ -57,6 +55,7 @@ func TestLoadUsesDefaults(t *testing.T) {
 	t.Setenv("FLATLINE_PUSH_TIMEOUT_SECONDS", "")
 	t.Setenv("FLATLINE_POLL_INTERVAL_SECONDS", "")
 	t.Setenv("FLATLINE_POLL_INITIAL_LOOKBACK_SECONDS", "")
+	t.Setenv("FLATLINE_POLL_MAX_CATCHUP_SECONDS", "")
 	t.Setenv("HTTP_READ_TIMEOUT_SECONDS", "")
 	t.Setenv("HTTP_WRITE_TIMEOUT_SECONDS", "")
 	t.Setenv("HTTP_IDLE_TIMEOUT_SECONDS", "")
@@ -71,8 +70,8 @@ func TestLoadUsesDefaults(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 
-	if cfg.AppPort != 3001 {
-		t.Fatalf("AppPort = %d, want 3001", cfg.AppPort)
+	if cfg.AppPort != 3000 {
+		t.Fatalf("AppPort = %d, want 3000", cfg.AppPort)
 	}
 	if cfg.AppHost != "127.0.0.1" {
 		t.Fatalf("AppHost = %q, want 127.0.0.1", cfg.AppHost)
@@ -98,17 +97,11 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.BackupsDir != "./backups" {
 		t.Fatalf("BackupsDir = %q, want ./backups", cfg.BackupsDir)
 	}
-	if cfg.JWTSecret != "test-insecure-jwt-secret" {
-		t.Fatalf("JWTSecret = %q, want test-insecure-jwt-secret", cfg.JWTSecret)
-	}
 	if cfg.OpenRouterAPIKey != "" {
 		t.Fatalf("OpenRouterAPIKey = %q, want empty", cfg.OpenRouterAPIKey)
 	}
 	if cfg.OpenRouterModel != "google/gemini-2.5-pro" {
 		t.Fatalf("OpenRouterModel = %q, want google/gemini-2.5-pro", cfg.OpenRouterModel)
-	}
-	if cfg.OpenRouterVisionModel != "google/gemini-2.5-flash" {
-		t.Fatalf("OpenRouterVisionModel = %q, want google/gemini-2.5-flash", cfg.OpenRouterVisionModel)
 	}
 	if cfg.OpenRouterImageModel != "google/gemini-2.5-flash-image" {
 		t.Fatalf("OpenRouterImageModel = %q, want google/gemini-2.5-flash-image", cfg.OpenRouterImageModel)
@@ -215,6 +208,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.FlatlinePollInitialLookback != 120*time.Second {
 		t.Fatalf("FlatlinePollInitialLookback = %v, want 120s", cfg.FlatlinePollInitialLookback)
 	}
+	if cfg.FlatlinePollMaxCatchUp != 600*time.Second {
+		t.Fatalf("FlatlinePollMaxCatchUp = %v, want 600s", cfg.FlatlinePollMaxCatchUp)
+	}
 	if cfg.HTTPReadTimeout != 15*time.Second {
 		t.Fatalf("HTTPReadTimeout = %v, want 15s", cfg.HTTPReadTimeout)
 	}
@@ -239,6 +235,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.WSWriteTimeout != 5*time.Second {
 		t.Fatalf("WSWriteTimeout = %v, want 5s", cfg.WSWriteTimeout)
 	}
+	if len(cfg.IngestSources) != 0 {
+		t.Fatalf("IngestSources = %v, want none by default", cfg.IngestSources)
+	}
 }
 
 func TestLoadRejectsInvalidPort(t *testing.T) {
@@ -259,10 +258,10 @@ func TestValidateRejectsInvalidLogLevel(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsInsecureJWTSecretOutsideTestLikeEnv(t *testing.T) {
+func TestValidateRejectsInvalidSessionRenewWindow(t *testing.T) {
 	cfg := validTestConfig()
-	cfg.AppEnv = "prod"
-	cfg.JWTSecret = "test-insecure-jwt-secret"
+	cfg.SessionTTL = time.Hour
+	cfg.SessionRenewWindow = time.Hour
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() error = nil, want error")
@@ -300,7 +299,6 @@ func TestValidateRejectsInvalidBackupConfig(t *testing.T) {
 func TestValidateAcceptsProdLikeConfig(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.AppEnv = "prod"
-	cfg.JWTSecret = "prod-secret"
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -319,7 +317,6 @@ func validTestConfig() Config {
 		MigrationsDir:                       "./migrations",
 		PublicDir:                           "./public",
 		BackupsDir:                          "./backups",
-		JWTSecret:                           "secret",
 		OpenRouterTimeout:                   time.Second,
 		ImageGenerationMaxAttempts:          3,
 		OpenAIEmbeddingDims:                 768,
@@ -354,6 +351,7 @@ func validTestConfig() Config {
 		FlatlinePushTimeout:                 time.Second,
 		FlatlinePollInterval:                10 * time.Second,
 		FlatlinePollInitialLookback:         120 * time.Second,
+		FlatlinePollMaxCatchUp:              600 * time.Second,
 		HTTPReadTimeout:                     time.Second,
 		HTTPWriteTimeout:                    time.Second,
 		HTTPIdleTimeout:                     time.Second,

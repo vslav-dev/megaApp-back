@@ -21,12 +21,6 @@ type CatalogueDebugRow struct {
 	DescriptionVec []byte
 }
 
-type CatalogueImageRow struct {
-	ID          int64
-	Name        string
-	Description string
-}
-
 func (r *Repository) GetCatalogueEntriesWithoutDescription(ctx context.Context, limit int) ([]CatalogueRow, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, name, kcals, protein, fat, carbs, fiber, description, legacyName
@@ -82,7 +76,7 @@ func (r *Repository) GetCatalogueEntriesWithoutEmbeddings(ctx context.Context, l
 }
 
 func (r *Repository) UpdateCatalogueEntryEmbeddings(ctx context.Context, catalogueID int64, nameVector []byte, descriptionVector []byte) (bool, error) {
-	result, err := r.db.ExecContext(ctx, `
+	result, err := r.write.ExecContext(ctx, `
 		UPDATE foodCatalogue
 		SET nameVec = ?, descriptionVec = ?
 		WHERE id = ?
@@ -98,7 +92,7 @@ func (r *Repository) UpdateCatalogueEntryEmbeddings(ctx context.Context, catalog
 }
 
 func (r *Repository) UpdateGeneratedCatalogueEntry(ctx context.Context, catalogueID int64, input ProductInput) (bool, error) {
-	result, err := r.db.ExecContext(ctx, `
+	result, err := r.write.ExecContext(ctx, `
 		UPDATE foodCatalogue
 		SET name = ?, kcals = ?, protein = ?, fat = ?, carbs = ?, fiber = ?, description = ?,
 			legacyName = COALESCE(legacyName, (SELECT name FROM foodCatalogue WHERE id = ?)),
@@ -113,43 +107,6 @@ func (r *Repository) UpdateGeneratedCatalogueEntry(ctx context.Context, catalogu
 		return false, fmt.Errorf("generated catalogue entry rows affected: %w", err)
 	}
 	return rowsAffected > 0, nil
-}
-
-func (r *Repository) GetCatalogueEntriesWithoutImages(ctx context.Context, existingImageIDs []int64, limit int) ([]CatalogueImageRow, error) {
-	query := `
-		SELECT id, name, COALESCE(description, '')
-		FROM foodCatalogue
-	`
-	args := make([]any, 0, len(existingImageIDs)+1)
-	if len(existingImageIDs) > 0 {
-		placeholders := make([]string, 0, len(existingImageIDs))
-		for _, id := range existingImageIDs {
-			placeholders = append(placeholders, "?")
-			args = append(args, id)
-		}
-		query += " WHERE id NOT IN (" + strings.Join(placeholders, ",") + ")"
-	}
-	query += " ORDER BY id ASC LIMIT ?"
-	args = append(args, limit)
-
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("get catalogue entries without images: %w", err)
-	}
-	defer rows.Close()
-
-	result := make([]CatalogueImageRow, 0)
-	for rows.Next() {
-		var row CatalogueImageRow
-		if err := rows.Scan(&row.ID, &row.Name, &row.Description); err != nil {
-			return nil, fmt.Errorf("scan catalogue entries without images: %w", err)
-		}
-		result = append(result, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate catalogue entries without images: %w", err)
-	}
-	return result, nil
 }
 
 func (r *Repository) GetAllCatalogueDebugEntries(ctx context.Context) ([]CatalogueDebugRow, error) {
@@ -178,7 +135,7 @@ func (r *Repository) GetAllCatalogueDebugEntries(ctx context.Context) ([]Catalog
 }
 
 func (r *Repository) ClearAllCatalogueEntries(ctx context.Context) (int64, error) {
-	result, err := r.db.ExecContext(ctx, `DELETE FROM foodCatalogue`)
+	result, err := r.write.ExecContext(ctx, `DELETE FROM foodCatalogue`)
 	if err != nil {
 		return 0, fmt.Errorf("clear catalogue entries: %w", err)
 	}
@@ -190,7 +147,7 @@ func (r *Repository) ClearAllCatalogueEntries(ctx context.Context) (int64, error
 }
 
 func (r *Repository) ImportCatalogueEntries(ctx context.Context, entries []CatalogueImportEntry) (int64, error) {
-	statement, err := r.db.PrepareContext(ctx, `
+	statement, err := r.write.PrepareContext(ctx, `
 		INSERT INTO foodCatalogue (name, description, legacyName)
 		VALUES (?, ?, ?)
 	`)

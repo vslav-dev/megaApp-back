@@ -14,24 +14,26 @@ import (
 
 	"megaapp-back/internal/httpx/legacy"
 	platformclock "megaapp-back/internal/platform/clock"
+	"megaapp-back/internal/platform/idempotency"
 
 	"github.com/disintegration/imaging"
 )
 
 type Service struct {
-	repo  *Repository
-	clock platformclock.Clock
+	repo        *Repository
+	idempotency *idempotency.Store
+	clock       platformclock.Clock
 }
 
-func NewService(repo *Repository) *Service {
-	return NewServiceWithClock(repo, platformclock.NewRealClock())
+func NewService(repo *Repository, idempotencyStore *idempotency.Store) *Service {
+	return NewServiceWithClock(repo, idempotencyStore, platformclock.NewRealClock())
 }
 
-func NewServiceWithClock(repo *Repository, appClock platformclock.Clock) *Service {
+func NewServiceWithClock(repo *Repository, idempotencyStore *idempotency.Store, appClock platformclock.Clock) *Service {
 	if appClock == nil {
 		appClock = platformclock.NewRealClock()
 	}
-	return &Service{repo: repo, clock: appClock}
+	return &Service{repo: repo, idempotency: idempotencyStore, clock: appClock}
 }
 
 func (s *Service) GetSnapshot(ctx context.Context, userID int64) (Snapshot, error) {
@@ -69,14 +71,13 @@ func (s *Service) GetSnapshot(ctx context.Context, userID int64) (Snapshot, erro
 	}
 
 	return Snapshot{
-		Currencies:        currencies,
-		Categories:        categories,
-		Organizations:     organizations,
-		Accounts:          accounts,
-		Assets:            assets,
-		InvestAssetTrades: investAssetTrades,
-		Transactions:      transactions,
-		RateHistory:       s.filterSnapshotRateHistory(rateHistory, currencies, investAssetTrades),
+		Currencies:    currencies,
+		Categories:    categories,
+		Organizations: organizations,
+		Accounts:      accounts,
+		Assets:        assets,
+		Transactions:  transactions,
+		RateHistory:   s.filterSnapshotRateHistory(rateHistory, currencies, investAssetTrades),
 	}, nil
 }
 
@@ -185,17 +186,8 @@ func (s *Service) CreateCategory(ctx context.Context, userID int64, input Catego
 	if err != nil {
 		return 0, err
 	}
-	if normalized.ParentID != nil {
-		parentCategory, err := s.repo.GetCategoryByID(ctx, userID, *normalized.ParentID)
-		if err != nil {
-			return 0, err
-		}
-		if parentCategory == nil {
-			return 0, legacy.NewError(legacy.ErrorKindValidation, "Parent category not found")
-		}
-		if parentCategory.CategoryType != normalized.CategoryType {
-			return 0, legacy.NewError(legacy.ErrorKindValidation, "Parent category type must match categoryType")
-		}
+	if err := s.ensureCategoryParent(ctx, userID, 0, normalized); err != nil {
+		return 0, err
 	}
 	return s.repo.CreateCategory(ctx, userID, normalized)
 }
@@ -213,22 +205,42 @@ func (s *Service) UpdateCategory(ctx context.Context, userID int64, categoryID i
 	if err != nil {
 		return err
 	}
-	if normalized.ParentID != nil && *normalized.ParentID == categoryID {
-		return legacy.NewError(legacy.ErrorKindValidation, "Parent category cannot be the same as the category")
+	if err := s.ensureCategoryParent(ctx, userID, categoryID, normalized); err != nil {
+		return err
 	}
-	if normalized.ParentID != nil {
-		parentCategory, err := s.repo.GetCategoryByID(ctx, userID, *normalized.ParentID)
+	// A transaction's category must be of the transaction's kind; retyping a used category would break it.
+	if normalized.CategoryType != existing.CategoryType {
+		linkedTransactionsCount, err := s.repo.CountTransactionsByCategory(ctx, userID, categoryID)
 		if err != nil {
 			return err
 		}
-		if parentCategory == nil {
-			return legacy.NewError(legacy.ErrorKindValidation, "Parent category not found")
-		}
-		if parentCategory.CategoryType != normalized.CategoryType {
-			return legacy.NewError(legacy.ErrorKindValidation, "Parent category type must match categoryType")
+		if linkedTransactionsCount > 0 {
+			return legacy.NewError(legacy.ErrorKindConflict, "Category type cannot change while transactions use the category")
 		}
 	}
 	return s.repo.UpdateCategory(ctx, userID, categoryID, normalized)
+}
+
+// ensureCategoryParent checks the parent a category's input references. selfID is 0 for a
+// category being created.
+func (s *Service) ensureCategoryParent(ctx context.Context, userID int64, selfID int64, input CategoryInput) error {
+	if input.ParentID == nil {
+		return nil
+	}
+	if *input.ParentID == selfID {
+		return legacy.NewError(legacy.ErrorKindValidation, "Parent category cannot be the same as the category")
+	}
+	parentCategory, err := s.repo.GetCategoryByID(ctx, userID, *input.ParentID)
+	if err != nil {
+		return err
+	}
+	if parentCategory == nil {
+		return legacy.NewError(legacy.ErrorKindValidation, "Parent category not found")
+	}
+	if parentCategory.CategoryType != input.CategoryType {
+		return legacy.NewError(legacy.ErrorKindValidation, "Parent category type must match categoryType")
+	}
+	return nil
 }
 
 func (s *Service) DeleteCategory(ctx context.Context, userID int64, categoryID int64) error {
@@ -391,110 +403,229 @@ func (s *Service) GetTransactions(ctx context.Context, userID int64) ([]Transact
 	return s.repo.ListTransactions(ctx, userID)
 }
 
-func (s *Service) GetInvestAssetTrades(ctx context.Context, userID int64) ([]InvestAssetTrade, error) {
-	return s.repo.ListInvestAssetTrades(ctx, userID)
-}
-
 func (s *Service) GetRateHistory(ctx context.Context) ([]RateHistory, error) {
 	return s.repo.ListRateHistory(ctx)
 }
 
-func (s *Service) CreateTransaction(ctx context.Context, userID int64, input TransactionInput) (CreateTransactionResult, error) {
+// peekIdempotency reports whether operationID has already been applied, without holding a
+// transaction open across it. Checked first and unconditionally in every write method below —
+// on a replay, nothing else (existence checks, cross-table validation) should run at all, since
+// the entity a stale retry refers to may have legitimately been mutated or deleted since by an
+// operation that already subsumes it. Cross-table validation reads (account/category/asset
+// lookups) happen via r.db (read pool) between this peek and the real write's own transaction
+// (write pool) — a concurrent write to one of those referenced rows in that window is a known,
+// accepted race (same class as "stale retry over a newer edit", see plan 15), not something this
+// function needs to close.
+func (s *Service) peekIdempotency(ctx context.Context, userID int64, operationID string) (string, bool, error) {
+	tx, err := s.idempotency.BeginTx(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	cachedJSON, found, err := s.idempotency.Find(ctx, tx, userID, operationID)
+	_ = tx.Rollback()
+	return cachedJSON, found, err
+}
+
+func (s *Service) CreateTransaction(ctx context.Context, userID int64, operationID string, input TransactionInput) (CreateTransactionResult, bool, error) {
+	cachedJSON, found, err := s.peekIdempotency(ctx, userID, operationID)
+	if err != nil {
+		return CreateTransactionResult{}, false, err
+	}
+	if found {
+		var cached CreateTransactionResult
+		if err := json.Unmarshal([]byte(cachedJSON), &cached); err != nil {
+			return CreateTransactionResult{}, false, fmt.Errorf("decode cached transaction create: %w", err)
+		}
+		return cached, false, nil
+	}
+
 	normalized, err := validateTransactionInput(input)
 	if err != nil {
-		return CreateTransactionResult{}, err
+		return CreateTransactionResult{}, false, err
 	}
 	if err := s.ensureTransactionAccount(ctx, userID, normalized.AccountID); err != nil {
-		return CreateTransactionResult{}, err
+		return CreateTransactionResult{}, false, err
 	}
-	if normalized.Kind == TransactionKindTransfer {
+	isTransfer := normalized.Kind == TransactionKindTransfer
+	if isTransfer {
 		if err := s.ensureTransactionAccount(ctx, userID, *normalized.TwinAccountID); err != nil {
-			return CreateTransactionResult{}, err
+			return CreateTransactionResult{}, false, err
 		}
-		return s.repo.CreateTransferPair(ctx, userID, normalized)
-	}
-	if isInvestTransactionKind(normalized.Kind) {
+	} else if isInvestTransactionKind(normalized.Kind) {
 		normalized, err = s.normalizeInvestTransaction(ctx, userID, normalized)
 		if err != nil {
-			return CreateTransactionResult{}, err
+			return CreateTransactionResult{}, false, err
 		}
 	} else {
 		if err := s.ensureTransactionCategory(ctx, userID, normalized.CategoryID, normalized.Kind); err != nil {
-			return CreateTransactionResult{}, err
+			return CreateTransactionResult{}, false, err
 		}
 	}
-	createdID, err := s.repo.CreateTransaction(ctx, userID, normalized)
+
+	tx, err := s.idempotency.BeginTx(ctx)
 	if err != nil {
-		return CreateTransactionResult{}, err
+		return CreateTransactionResult{}, false, err
 	}
-	return CreateTransactionResult{ID: createdID}, nil
+
+	var result CreateTransactionResult
+	if isTransfer {
+		result, err = s.repo.CreateTransferPair(ctx, tx, userID, normalized)
+	} else {
+		var createdID int64
+		createdID, err = s.repo.CreateTransaction(ctx, tx, userID, normalized)
+		result = CreateTransactionResult{ID: createdID, Version: 1}
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		return CreateTransactionResult{}, false, err
+	}
+
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		_ = tx.Rollback()
+		return CreateTransactionResult{}, false, err
+	}
+	if err := s.idempotency.Record(ctx, tx, userID, operationID, string(resultJSON)); err != nil {
+		_ = tx.Rollback()
+		return CreateTransactionResult{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CreateTransactionResult{}, false, fmt.Errorf("commit create transaction: %w", err)
+	}
+	return result, true, nil
 }
 
-func (s *Service) UpdateTransaction(ctx context.Context, userID int64, transactionID int64, input TransactionInput) error {
-	existing, err := s.repo.GetTransactionByID(ctx, userID, transactionID)
+func (s *Service) UpdateTransaction(ctx context.Context, userID int64, operationID string, transactionID int64, input TransactionInput) (newVersion int64, applied bool, err error) {
+	cachedJSON, found, err := s.peekIdempotency(ctx, userID, operationID)
 	if err != nil {
-		return err
+		return 0, false, err
+	}
+	if found {
+		var cached struct {
+			Version int64 `json:"version"`
+		}
+		if err := json.Unmarshal([]byte(cachedJSON), &cached); err != nil {
+			return 0, false, fmt.Errorf("decode cached transaction update: %w", err)
+		}
+		return cached.Version, false, nil
+	}
+
+	existing, err := s.repo.GetTransactionByID(ctx, s.repo.db, userID, transactionID)
+	if err != nil {
+		return 0, false, err
 	}
 	if existing == nil {
-		return legacy.NewError(legacy.ErrorKindNotFound, "Transaction not found")
+		return 0, false, legacy.NewError(legacy.ErrorKindNotFound, "Transaction not found")
 	}
 
 	normalized, err := validateTransactionInput(input)
 	if err != nil {
-		return err
+		return 0, false, err
 	}
 	if normalized.Kind != existing.Kind {
-		return legacy.NewError(legacy.ErrorKindValidation, "Transaction kind cannot be changed")
+		return 0, false, legacy.NewError(legacy.ErrorKindValidation, "Transaction kind cannot be changed")
 	}
 	if normalized.AccountID != existing.AccountID {
-		return legacy.NewError(legacy.ErrorKindValidation, "Account cannot be changed")
+		return 0, false, legacy.NewError(legacy.ErrorKindValidation, "Account cannot be changed")
 	}
 
-	if existing.Kind == TransactionKindTransfer {
+	isTransfer := existing.Kind == TransactionKindTransfer
+	var twinTransaction *Transaction
+	if isTransfer {
 		if normalized.TwinAccountID == nil || normalized.TwinAmount == nil {
-			return missingFieldsError("twinAccountId", "twinAmount")
+			return 0, false, missingFieldsError("twinAccountId", "twinAmount")
 		}
 		if existing.TwinID == nil {
-			return legacy.NewError(legacy.ErrorKindValidation, "Transfer pair is missing")
+			return 0, false, legacy.NewError(legacy.ErrorKindValidation, "Transfer pair is missing")
 		}
-		twinTransaction, err := s.repo.GetTransactionByID(ctx, userID, *existing.TwinID)
+		twinTransaction, err = s.repo.GetTransactionByID(ctx, s.repo.db, userID, *existing.TwinID)
 		if err != nil {
-			return err
+			return 0, false, err
 		}
 		if twinTransaction == nil {
-			return legacy.NewError(legacy.ErrorKindValidation, "Transfer pair is missing")
+			return 0, false, legacy.NewError(legacy.ErrorKindValidation, "Transfer pair is missing")
 		}
 		if *normalized.TwinAccountID != twinTransaction.AccountID {
-			return legacy.NewError(legacy.ErrorKindValidation, "Account cannot be changed")
+			return 0, false, legacy.NewError(legacy.ErrorKindValidation, "Account cannot be changed")
 		}
-		return s.repo.UpdateTransferPair(ctx, userID, existing.ID, twinTransaction.ID, normalized)
-	}
-
-	if isInvestTransactionKind(existing.Kind) {
+	} else if isInvestTransactionKind(existing.Kind) {
 		normalized, err = s.normalizeExistingInvestTransaction(ctx, userID, *existing, normalized)
 		if err != nil {
-			return err
+			return 0, false, err
 		}
 	} else {
 		if err := s.ensureTransactionCategory(ctx, userID, normalized.CategoryID, normalized.Kind); err != nil {
-			return err
+			return 0, false, err
 		}
 	}
-	if err := s.repo.UpdateTransaction(ctx, userID, transactionID, normalized); err != nil {
-		return err
+
+	tx, err := s.idempotency.BeginTx(ctx)
+	if err != nil {
+		return 0, false, err
 	}
-	return nil
+
+	newVersion = existing.Version + 1
+	if isTransfer {
+		err = s.repo.UpdateTransferPair(ctx, tx, userID, existing.ID, twinTransaction.ID, normalized, newVersion, twinTransaction.Version+1)
+	} else {
+		err = s.repo.UpdateTransaction(ctx, tx, userID, transactionID, normalized, newVersion)
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, false, err
+	}
+
+	resultJSON, err := json.Marshal(struct {
+		Version int64 `json:"version"`
+	}{newVersion})
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, false, err
+	}
+	if err := s.idempotency.Record(ctx, tx, userID, operationID, string(resultJSON)); err != nil {
+		_ = tx.Rollback()
+		return 0, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("commit update transaction: %w", err)
+	}
+	return newVersion, true, nil
 }
 
-func (s *Service) DeleteTransaction(ctx context.Context, userID int64, transactionID int64) error {
-	existing, err := s.repo.GetTransactionByID(ctx, userID, transactionID)
+func (s *Service) DeleteTransaction(ctx context.Context, userID int64, operationID string, transactionID int64) (applied bool, err error) {
+	_, found, err := s.peekIdempotency(ctx, userID, operationID)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if found {
+		return false, nil
+	}
+
+	existing, err := s.repo.GetTransactionByID(ctx, s.repo.db, userID, transactionID)
+	if err != nil {
+		return false, err
 	}
 	if existing == nil {
-		return legacy.NewError(legacy.ErrorKindNotFound, "Transaction not found")
+		return false, legacy.NewError(legacy.ErrorKindNotFound, "Transaction not found")
 	}
-	return s.repo.DeleteTransaction(ctx, userID, transactionID)
+
+	tx, err := s.idempotency.BeginTx(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	if err := s.repo.DeleteTransaction(ctx, tx, userID, transactionID); err != nil {
+		_ = tx.Rollback()
+		return false, err
+	}
+	if err := s.idempotency.Record(ctx, tx, userID, operationID, "{}"); err != nil {
+		_ = tx.Rollback()
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit delete transaction: %w", err)
+	}
+	return true, nil
 }
 
 func (s *Service) ensureAccountReferences(ctx context.Context, userID int64, input AccountInput) error {
@@ -657,15 +788,12 @@ func (s *Service) filterSnapshotRateHistory(rateHistory []RateHistory, currencie
 		if !ok {
 			continue
 		}
-		year, month, day, ok := parseISODateParts(record.DateISO)
-		if !ok {
+		if _, _, _, ok := parseISODateParts(record.DateISO); !ok {
 			continue
 		}
 		allowedTickers := cloneTickerSet(currencyTickers)
-		if day == daysInMonth(year, month) {
-			for ticker := range eomHeld[record.DateISO[:7]] {
-				allowedTickers[ticker] = struct{}{}
-			}
+		for ticker := range eomHeld[record.DateISO[:7]] {
+			allowedTickers[ticker] = struct{}{}
 		}
 
 		filtered := make(map[string]float64)
@@ -819,8 +947,19 @@ func validateCategoryInput(input CategoryInput) (CategoryInput, error) {
 	if input.ParentID != nil && *input.ParentID <= 0 {
 		return CategoryInput{}, legacy.NewError(legacy.ErrorKindValidation, "Parent category not found")
 	}
+	if input.Hue != nil && (*input.Hue < 0 || *input.Hue > 360) {
+		return CategoryInput{}, legacy.NewError(legacy.ErrorKindValidation, "hue must be between 0 and 360")
+	}
+	// The same limits as the frontend color sliders: below or above them no color is left to tell apart.
+	if input.Lightness != nil && (*input.Lightness < 20 || *input.Lightness > 95) {
+		return CategoryInput{}, legacy.NewError(legacy.ErrorKindValidation, "lightness must be between 20 and 95")
+	}
+	if input.Saturation != nil && (*input.Saturation < 0 || *input.Saturation > 100) {
+		return CategoryInput{}, legacy.NewError(legacy.ErrorKindValidation, "saturation must be between 0 and 100")
+	}
 
-	return CategoryInput{Name: name, ParentID: input.ParentID, CategoryType: input.CategoryType}, nil
+	input.Name = name
+	return input, nil
 }
 
 func validateAccountInput(input AccountInput) (AccountInput, error) {
@@ -966,8 +1105,8 @@ func validateTransactionInput(input TransactionInput) (TransactionInput, error) 
 		return normalized, nil
 	}
 
-	if !isInvestTransactionKind(input.Kind) && input.Amount <= 0 {
-		return TransactionInput{}, legacy.NewError(legacy.ErrorKindValidation, "amount must be greater than 0")
+	if !isInvestTransactionKind(input.Kind) && input.Amount < 0 {
+		return TransactionInput{}, legacy.NewError(legacy.ErrorKindValidation, "amount must be greater than or equal to 0")
 	}
 	return normalized, nil
 }

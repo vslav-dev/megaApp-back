@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"megaapp-back/internal/platform/sqlite"
+
 	"github.com/go-chi/chi/v5"
 )
 
@@ -14,7 +16,7 @@ func TestDebugRouteRunsQuotesJob(t *testing.T) {
 	db := openQuotesTestDB(t)
 	insertQuoteCurrency(t, db, "RUB")
 
-	service := NewService(NewRepository(db), Config{
+	service := NewService(NewRepository(db, sqlite.WriteDB{DB: db}), Config{
 		FetchDays:      7,
 		RetryAttempts:  3,
 		RetryDelay:     time.Millisecond,

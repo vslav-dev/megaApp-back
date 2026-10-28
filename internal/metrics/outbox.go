@@ -1,14 +1,20 @@
 package metrics
 
 import (
+	"bufio"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+
+	"megaapp-back/internal/platform/appendfile"
 )
 
 const outboxChunkLimitBytes int64 = 950 * 1000
@@ -72,21 +78,8 @@ func appendOutboxLine(box *outbox, service string, snapshot MinuteSnapshot) erro
 		box.nextIndex++
 	}
 
-	if err := os.MkdirAll(filepath.Dir(box.activePath), 0o755); err != nil {
-		return fmt.Errorf("create metrics outbox dir: %w", err)
-	}
-
-	file, err := os.OpenFile(box.activePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("open metrics outbox: %w", err)
-	}
-	defer file.Close()
-
-	if _, err := file.Write(encoded); err != nil {
+	if err := appendfile.Append(box.activePath, encoded); err != nil {
 		return fmt.Errorf("append metrics snapshot: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		return fmt.Errorf("sync metrics outbox: %w", err)
 	}
 
 	box.activeSize += int64(len(encoded))
@@ -105,6 +98,105 @@ func encodeOutboxLine(service string, snapshot MinuteSnapshot) ([]byte, error) {
 		return nil, fmt.Errorf("encode metrics snapshot: %w", err)
 	}
 	return append(encoded, '\n'), nil
+}
+
+func readPendingSnapshots(basePath, service string, lastAcked int64) ([]MinuteSnapshot, error) {
+	files, err := listOutboxFiles(basePath)
+	if err != nil {
+		return nil, err
+	}
+
+	byBucket := make(map[int64]MinuteSnapshot)
+	for _, path := range files {
+		if err := readOutboxFile(path, func(line outboxLine) error {
+			if strings.TrimSpace(line.Service) == "" {
+				return errors.New("missing service")
+			}
+			if line.Service != service {
+				return nil
+			}
+			if line.MinuteBucket <= 0 || len(line.Metrics) == 0 {
+				return errors.New("missing minuteBucket or metrics")
+			}
+			for name, value := range line.Metrics {
+				if strings.TrimSpace(name) == "" || math.IsNaN(value) || math.IsInf(value, 0) {
+					return errors.New("invalid metric")
+				}
+			}
+			if line.MinuteBucket <= lastAcked {
+				return nil
+			}
+			byBucket[line.MinuteBucket] = MinuteSnapshot{
+				MinuteBucket: line.MinuteBucket,
+				Metrics:      line.Metrics,
+			}
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	pending := make([]MinuteSnapshot, 0, len(byBucket))
+	for _, snapshot := range byBucket {
+		pending = append(pending, snapshot)
+	}
+	slices.SortFunc(pending, func(left, right MinuteSnapshot) int {
+		return cmp.Compare(left.MinuteBucket, right.MinuteBucket)
+	})
+	return pending, nil
+}
+
+func listOutboxFiles(basePath string) ([]string, error) {
+	files := make([]string, 0)
+	if _, err := os.Stat(basePath); err == nil {
+		files = append(files, basePath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("stat legacy metrics outbox: %w", err)
+	}
+
+	numbered, err := listNumberedOutboxFiles(basePath)
+	if err != nil {
+		return nil, err
+	}
+	for _, file := range numbered {
+		files = append(files, file.path)
+	}
+	return files, nil
+}
+
+func readOutboxFile(path string, use func(outboxLine) error) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open metrics outbox %q: %w", path, err)
+	}
+	defer file.Close()
+
+	reader := bufio.NewReader(file)
+	for lineNumber := 1; ; lineNumber++ {
+		encoded, readErr := reader.ReadBytes('\n')
+		if len(encoded) > 0 {
+			if strings.TrimSpace(string(encoded)) == "" {
+				if readErr != nil {
+					break
+				}
+				continue
+			}
+			var line outboxLine
+			if err := json.Unmarshal(encoded, &line); err != nil {
+				return fmt.Errorf("decode metrics outbox %q line %d: %w", path, lineNumber, err)
+			}
+			if err := use(line); err != nil {
+				return fmt.Errorf("decode metrics outbox %q line %d: %w", path, lineNumber, err)
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return fmt.Errorf("read metrics outbox %q: %w", path, readErr)
+		}
+	}
+	return nil
 }
 
 func listNumberedOutboxFiles(basePath string) ([]numberedOutboxFile, error) {

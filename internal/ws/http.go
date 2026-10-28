@@ -1,7 +1,9 @@
 package ws
 
 import (
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"megaapp-back/internal/auth"
@@ -25,7 +27,7 @@ func NewHandler(authService *auth.Service, hub *Hub) *Handler {
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
 			CheckOrigin: func(r *http.Request) bool {
-				return true
+				return isAllowedOrigin(r)
 			},
 		},
 	}
@@ -36,15 +38,9 @@ func RegisterRoutes(router chi.Router, handler *Handler) {
 }
 
 func (h *Handler) Connect(w http.ResponseWriter, r *http.Request) {
-	token := extractToken(r)
-	if token == "" {
-		writeError(w, http.StatusUnauthorized, "Token required")
-		return
-	}
-
-	claims, err := h.authService.Verify(token)
+	identity, err := h.authService.AuthenticateCookie(r.Context(), sessionCookieValue(r))
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "Invalid token")
+		writeError(w, http.StatusUnauthorized, "Invalid session")
 		return
 	}
 
@@ -61,24 +57,36 @@ func (h *Handler) Connect(w http.ResponseWriter, r *http.Request) {
 		clientID = strings.TrimSpace(r.Header.Get("X-Client-Id"))
 	}
 
-	if _, err := h.hub.AddClient(conn, claims.UserID, clientID); err != nil {
+	if _, err := h.hub.AddClient(conn, identity.UserID, identity.SessionID, identity.ExpiresAt, clientID); err != nil {
 		_ = conn.Close()
 	}
 }
 
-func extractToken(r *http.Request) string {
-	token := strings.TrimSpace(r.URL.Query().Get("token"))
-	if token != "" {
-		return token
-	}
-
-	authorizationHeader := strings.TrimSpace(r.Header.Get("Authorization"))
-	parts := strings.SplitN(authorizationHeader, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+func sessionCookieValue(r *http.Request) string {
+	cookie, err := r.Cookie(auth.SessionCookieName)
+	if err != nil {
 		return ""
 	}
+	return cookie.Value
+}
 
-	return strings.TrimSpace(parts[1])
+func isAllowedOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return false
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	if strings.EqualFold(parsed.Host, r.Host) {
+		return true
+	}
+	host, port, err := net.SplitHostPort(r.Host)
+	if err != nil || (host != "localhost" && host != "127.0.0.1") || port != "3000" {
+		return false
+	}
+	return (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1") && (parsed.Port() == "4200" || parsed.Port() == "4201")
 }
 
 func writeError(w http.ResponseWriter, statusCode int, message string) {

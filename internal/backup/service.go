@@ -3,7 +3,6 @@ package backup
 import (
 	"archive/zip"
 	"context"
-	"database/sql"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +14,7 @@ import (
 	"megaapp-back/internal/httpx/legacy"
 	platformclock "megaapp-back/internal/platform/clock"
 	logplatform "megaapp-back/internal/platform/log"
+	"megaapp-back/internal/platform/sqlite"
 )
 
 const MetricJobRan = "backup_job_ran"
@@ -39,14 +39,14 @@ type ArchiveUploader interface {
 }
 
 type Service struct {
-	db       *sql.DB
+	db       sqlite.WriteDB
 	cfg      Config
 	clock    platformclock.Clock
 	logger   *slog.Logger
 	uploader ArchiveUploader
 }
 
-func NewService(db *sql.DB, cfg Config, clk platformclock.Clock, logger *slog.Logger, uploader ArchiveUploader) *Service {
+func NewService(db sqlite.WriteDB, cfg Config, clk platformclock.Clock, logger *slog.Logger, uploader ArchiveUploader) *Service {
 	if clk == nil {
 		clk = platformclock.NewRealClock()
 	}
@@ -99,7 +99,7 @@ func (s *Service) Run(ctx context.Context) (result RunResult, err error) {
 	}
 	archiveDuration := time.Since(archiveStartedAt)
 
-	uploadedKey := fmt.Sprintf("%s/%s", s.cfg.DatabaseEnv, filepath.Base(archivePath))
+	uploadedKey := filepath.Base(archivePath)
 	uploadStartedAt := time.Now()
 	if err := s.uploader.UploadFile(ctx, uploadedKey, archivePath, "application/zip", s.cfg.StorageClass); err != nil {
 		return RunResult{}, legacy.WrapError(legacy.ErrorKindExternal, "Failed to upload backup archive", err)

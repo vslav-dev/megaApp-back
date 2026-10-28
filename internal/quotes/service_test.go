@@ -11,6 +11,7 @@ import (
 	"time"
 
 	platformclock "megaapp-back/internal/platform/clock"
+	"megaapp-back/internal/platform/sqlite"
 
 	_ "modernc.org/sqlite"
 )
@@ -25,12 +26,16 @@ func (c fixedClock) Now() time.Time {
 
 type fakeBatchFetcher struct {
 	data    map[string]map[string]float64
-	errored []string
+	outcome BatchOutcome
 	err     error
 }
 
-func (f fakeBatchFetcher) Fetch(context.Context, string, string, RetryConfig) (map[string]map[string]float64, []string, error) {
-	return cloneBatchRates(f.data), append([]string(nil), f.errored...), f.err
+func (f fakeBatchFetcher) Fetch(context.Context, string, string, RetryConfig) (map[string]map[string]float64, BatchOutcome, error) {
+	outcome := BatchOutcome{
+		Failures: append([]TickerFailure(nil), f.outcome.Failures...),
+		Degraded: append([]TickerFailure(nil), f.outcome.Degraded...),
+	}
+	return cloneBatchRates(f.data), outcome, f.err
 }
 
 func TestServiceRunDiscoversTickersAndUpsertsRates(t *testing.T) {
@@ -50,7 +55,7 @@ func TestServiceRunDiscoversTickersAndUpsertsRates(t *testing.T) {
 	insertQuoteTrade(t, db, 5, "invest_sell", `{"assetId":4,"quantity":1}`)
 	insertQuoteRateHistory(t, db, "2026-07-03", `{"USD":1}`)
 
-	service := NewService(NewRepository(db), Config{
+	service := NewService(NewRepository(db, sqlite.WriteDB{DB: db}), Config{
 		FetchDays:      7,
 		RetryAttempts:  3,
 		RetryDelay:     time.Millisecond,
@@ -106,8 +111,8 @@ func TestServiceRunDiscoversTickersAndUpsertsRates(t *testing.T) {
 	if result.UpsertedCount != 2 || result.FromISO != "2026-07-03" || result.ToISO != "2026-07-09" {
 		t.Fatalf("Run() result = %+v", result)
 	}
-	if len(result.Errors) != 0 {
-		t.Fatalf("Run() errors = %v, want empty", result.Errors)
+	if len(result.Failures) != 0 {
+		t.Fatalf("Run() failures = %v, want empty", result.Failures)
 	}
 
 	if !reflect.DeepEqual(currencyTickers, []string{"EUR", "RUB"}) {
@@ -140,7 +145,7 @@ func TestFetchTickerWithFallbacksRetriesAndFallsBack(t *testing.T) {
 
 	attempts := 0
 	nextCalls := 0
-	data, hadErrors, err := fetcher.fetchTickerWithFallbacks(context.Background(), "BTC", []tickerSource{
+	data, sourceLog, err := fetcher.fetchTickerWithFallbacks(context.Background(), "BTC", []tickerSource{
 		{name: "primary", fetch: func(context.Context) (map[string]float64, error) {
 			attempts++
 			if attempts == 1 {
@@ -156,14 +161,65 @@ func TestFetchTickerWithFallbacksRetriesAndFallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetchTickerWithFallbacks() error = %v", err)
 	}
-	if !hadErrors {
-		t.Fatal("hadErrors = false, want true")
+	wantLog := []string{"primary: http 429", "fallback: ok"}
+	if !reflect.DeepEqual(sourceLog, wantLog) {
+		t.Fatalf("sourceLog = %v, want %v (fallback recovered it, worth flagging as degraded)", sourceLog, wantLog)
 	}
 	if attempts != 1 || nextCalls != 1 {
 		t.Fatalf("attempts = %d, nextCalls = %d", attempts, nextCalls)
 	}
 	if data["2026-07-04"] != 2 {
 		t.Fatalf("data = %v, want fallback result", data)
+	}
+}
+
+func TestFetchTickerWithFallbacksLogsSourceOutcomesWhenAllFail(t *testing.T) {
+	fetcher := NewMarketFetcher(time.Second)
+	fetcher.sleep = func(context.Context, time.Duration) error { return nil }
+
+	data, sourceLog, err := fetcher.fetchTickerWithFallbacks(context.Background(), "BTC", []tickerSource{
+		{name: "primary", fetch: func(context.Context) (map[string]float64, error) {
+			return nil, httpError{status: http.StatusUnauthorized, message: "key required"}
+		}},
+		{name: "fallback", fetch: func(context.Context) (map[string]float64, error) {
+			return map[string]float64{}, nil
+		}},
+	}, RetryConfig{Attempts: 3, Delay: time.Millisecond})
+	if err != nil {
+		t.Fatalf("fetchTickerWithFallbacks() error = %v", err)
+	}
+	if data != nil {
+		t.Fatalf("data = %v, want nil", data)
+	}
+	want := []string{"primary: http 401", "fallback: empty response"}
+	if !reflect.DeepEqual(sourceLog, want) {
+		t.Fatalf("sourceLog = %v, want %v", sourceLog, want)
+	}
+}
+
+func TestRecordTickerOutcome(t *testing.T) {
+	tests := []struct {
+		name         string
+		data         map[string]float64
+		sourceLog    []string
+		wantFailures int
+		wantDegraded int
+	}{
+		{name: "healthy, first source succeeded, nothing recorded", data: map[string]float64{"x": 1}, sourceLog: nil},
+		{name: "recovered via fallback, worth flagging as degraded", data: map[string]float64{"x": 1}, sourceLog: []string{"coinGecko: http 429", "yahoo: ok"}, wantDegraded: 1},
+		{name: "every source failed", data: nil, sourceLog: []string{"coinGecko: http 429", "yahoo: http 401"}, wantFailures: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var outcome BatchOutcome
+			recordTickerOutcome(&outcome, "crypto", "BTC", tt.data, tt.sourceLog)
+			if len(outcome.Failures) != tt.wantFailures {
+				t.Fatalf("Failures = %v, want %d entries", outcome.Failures, tt.wantFailures)
+			}
+			if len(outcome.Degraded) != tt.wantDegraded {
+				t.Fatalf("Degraded = %v, want %d entries", outcome.Degraded, tt.wantDegraded)
+			}
+		})
 	}
 }
 

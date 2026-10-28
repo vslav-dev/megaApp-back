@@ -22,6 +22,7 @@ type generateProductPreviewRequest struct {
 }
 
 type saveProductRequest struct {
+	OperationID string  `json:"operationId"`
 	ID          *int64  `json:"id"`
 	Name        string  `json:"name"`
 	Kcals       int64   `json:"kcals"`
@@ -30,10 +31,11 @@ type saveProductRequest struct {
 	Carbs       float64 `json:"carbs"`
 	Fiber       float64 `json:"fiber"`
 	Description string  `json:"description"`
+	Archived    *bool   `json:"archived"`
 }
 
-type analyzeVoiceRequest struct {
-	Transcript string `json:"transcript"`
+type deleteCatalogueEntryRequest struct {
+	OperationID string `json:"operationId"`
 }
 
 func NewCatalogueHandler(service *Service, realtime RealtimePublisher, metricsRecorder MetricsRecorder) *CatalogueHandler {
@@ -44,9 +46,8 @@ func RegisterCatalogueRoutes(router chi.Router, authService *auth.Service, handl
 	router.With(auth.Middleware(authService)).Get("/api/food/search", handler.SearchCatalogue)
 	router.With(auth.Middleware(authService)).Post("/api/food/generate-product-preview", handler.GenerateProductPreview)
 	router.With(auth.Middleware(authService)).Post("/api/food/save-product", handler.SaveProduct)
-	router.With(auth.Middleware(authService)).Post("/api/food/analyze-image", handler.AnalyzeImage)
-	router.With(auth.Middleware(authService)).Post("/api/food/analyze-voice", handler.AnalyzeVoice)
 	router.With(auth.Middleware(authService)).Delete("/api/food/catalogue/{catalogueId}", handler.DeleteCatalogueEntry)
+	router.With(auth.Middleware(authService)).Post("/api/food/catalogue/{catalogueId}/regenerate-image", handler.RegenerateProductImage)
 }
 
 func (h *CatalogueHandler) SearchCatalogue(w http.ResponseWriter, r *http.Request) {
@@ -93,8 +94,12 @@ func (h *CatalogueHandler) SaveProduct(w http.ResponseWriter, r *http.Request) {
 		legacy.WriteAppResultError(w, err, http.StatusBadRequest, "Invalid request body")
 		return
 	}
+	if request.OperationID == "" {
+		legacy.WriteResultError(w, http.StatusBadRequest, "operationId is required")
+		return
+	}
 
-	entry, err := h.service.SaveProduct(r.Context(), request.ID, ProductInput{
+	entry, applied, err := h.service.SaveProduct(r.Context(), claims.UserID, request.OperationID, request.ID, ProductInput{
 		Name:        request.Name,
 		Kcals:       request.Kcals,
 		Protein:     request.Protein,
@@ -102,6 +107,7 @@ func (h *CatalogueHandler) SaveProduct(w http.ResponseWriter, r *http.Request) {
 		Carbs:       request.Carbs,
 		Fiber:       request.Fiber,
 		Description: request.Description,
+		Archived:    request.Archived,
 	})
 	if err != nil {
 		legacy.WriteAppResultError(w, err, http.StatusInternalServerError, "Internal server error")
@@ -112,7 +118,7 @@ func (h *CatalogueHandler) SaveProduct(w http.ResponseWriter, r *http.Request) {
 	if request.ID != nil {
 		statusCode = http.StatusOK
 	}
-	if entry != nil {
+	if applied && entry != nil {
 		h.realtime.MarkUserUpdated(claims.UserID)
 		h.realtime.PublishCatalogueEntrySaved(claims.UserID, *entry, extractClientID(r))
 		if request.ID != nil {
@@ -124,39 +130,66 @@ func (h *CatalogueHandler) SaveProduct(w http.ResponseWriter, r *http.Request) {
 	legacy.WriteJSON(w, statusCode, map[string]any{"result": true, "data": map[string]any{"catalogueEntry": entry}})
 }
 
-func (h *CatalogueHandler) AnalyzeVoice(w http.ResponseWriter, r *http.Request) {
-	var request analyzeVoiceRequest
-	if err := legacy.DecodeJSON(r, &request); err != nil {
-		legacy.WriteAppResultError(w, err, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-
-	response, err := h.service.AnalyzeVoiceTranscript(r.Context(), request.Transcript)
-	if err != nil {
-		legacy.WriteAppResultError(w, err, http.StatusInternalServerError, "Internal server error")
-		return
-	}
-
-	legacy.WriteJSON(w, http.StatusOK, map[string]any{"result": true, "data": response})
-}
-
 func (h *CatalogueHandler) DeleteCatalogueEntry(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.UserClaimsFromContext(r.Context())
+	if !ok {
+		legacy.WriteMessage(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
 	catalogueID, err := strconv.ParseInt(chi.URLParam(r, "catalogueId"), 10, 64)
 	if err != nil {
 		legacy.WriteResultError(w, http.StatusBadRequest, "Invalid catalogueId")
 		return
 	}
 
-	deleted, err := h.service.DeleteProduct(r.Context(), catalogueID)
+	var request deleteCatalogueEntryRequest
+	if err := legacy.DecodeJSON(r, &request); err != nil {
+		legacy.WriteAppResultError(w, err, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if request.OperationID == "" {
+		legacy.WriteResultError(w, http.StatusBadRequest, "operationId is required")
+		return
+	}
+
+	deleted, applied, err := h.service.DeleteProduct(r.Context(), claims.UserID, request.OperationID, catalogueID)
 	if err != nil {
 		legacy.WriteAppResultError(w, err, http.StatusInternalServerError, "Internal server error")
 		return
 	}
 	if !deleted {
-		legacy.WriteResultError(w, http.StatusNotFound, "Product not found")
+		legacy.WriteResultError(w, http.StatusNotFound, "product not found")
 		return
 	}
 
-	h.metrics.Increment(MetricCatalogueEntryDeleted)
+	if applied {
+		h.realtime.MarkUserUpdated(claims.UserID)
+		h.realtime.PublishCatalogueEntryDeleted(catalogueID, extractClientID(r))
+		h.metrics.Increment(MetricCatalogueEntryDeleted)
+	}
 	legacy.WriteJSON(w, http.StatusOK, map[string]any{"result": true, "data": map[string]any{"catalogueId": catalogueID}})
+}
+
+// RegenerateProductImage answers 202 as soon as the generation is queued; the result reaches
+// clients as a realtime event, since generation takes seconds.
+func (h *CatalogueHandler) RegenerateProductImage(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.UserClaimsFromContext(r.Context())
+	if !ok {
+		legacy.WriteMessage(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	catalogueID, err := strconv.ParseInt(chi.URLParam(r, "catalogueId"), 10, 64)
+	if err != nil {
+		legacy.WriteResultError(w, http.StatusBadRequest, "Invalid catalogueId")
+		return
+	}
+
+	outcome, err := h.service.RegenerateProductImage(r.Context(), claims.UserID, catalogueID)
+	if err != nil {
+		legacy.WriteAppResultError(w, err, http.StatusInternalServerError, "Internal server error")
+		return
+	}
+	legacy.WriteJSON(w, http.StatusAccepted, map[string]any{"result": true, "data": map[string]any{"status": outcome}})
 }

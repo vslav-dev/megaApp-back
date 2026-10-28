@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"megaapp-back/internal/auth"
+	"megaapp-back/internal/platform/idempotency"
+	"megaapp-back/internal/platform/sqlite"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -22,20 +24,16 @@ func TestMoneyRoutesSnapshotAndReferenceCrud(t *testing.T) {
 	insertMoneyReadFixtures(t, db, 1)
 	insertMoneyBrokerageAccount(t, db, 1, 2, "Brokerage", AccountKindBrokerage)
 
-	authRepo := auth.NewRepository(db)
-	tokenManager := auth.NewTokenManager("test-secret", time.Hour, 24*time.Hour)
-	authService := auth.NewService(authRepo, tokenManager)
-	handler := NewHandler(NewService(NewRepository(db)))
+	authRepo := auth.NewRepository(db, sqlite.WriteDB{DB: db})
+	authService := auth.NewService(authRepo, auth.SessionConfig{})
+	handler := NewHandler(NewService(NewRepository(db, sqlite.WriteDB{DB: db}), idempotency.NewStore(sqlite.WriteDB{DB: db})))
 
 	router := chi.NewRouter()
 	RegisterRoutes(router, authService, handler)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
-	tokens, err := tokenManager.Issue(auth.TokenClaims{UserID: 1, Username: "alice"})
-	if err != nil {
-		t.Fatalf("Issue() error = %v", err)
-	}
+	tokens := issueMoneySession(t, authService, 1)
 
 	assertMoneyStatus(t, http.MethodGet, server.URL+"/api/money/snapshot", tokens.AccessToken, nil, http.StatusOK)
 	assertMoneyStatus(t, http.MethodGet, server.URL+"/api/money/organizations", tokens.AccessToken, nil, http.StatusOK)
@@ -66,6 +64,17 @@ func TestMoneyRoutesSnapshotAndReferenceCrud(t *testing.T) {
 		"name":         "Salary",
 		"categoryType": "income",
 	}, http.StatusCreated)
+	assertMoneyStatus(t, http.MethodPost, server.URL+"/api/money/categories", tokens.AccessToken, map[string]any{
+		"name":           "Tax",
+		"categoryType":   "expense",
+		"hiddenOnCharts": true,
+		"hue":            300,
+	}, http.StatusCreated)
+	assertMoneyStatus(t, http.MethodPost, server.URL+"/api/money/categories", tokens.AccessToken, map[string]any{
+		"name":         "Bad hue",
+		"categoryType": "expense",
+		"hue":          361,
+	}, http.StatusBadRequest)
 	assertMoneyStatus(t, http.MethodPut, server.URL+"/api/money/categories/2", tokens.AccessToken, map[string]any{
 		"name":         "Groceries Updated",
 		"categoryType": "expense",
@@ -125,46 +134,79 @@ func TestMoneyRoutesTransactionsCrud(t *testing.T) {
 	insertMoneyAccount(t, db, 1, 2, "Card", AccountKindCard)
 	insertMoneyCategory(t, db, 1, 3, "Salary", nil, CategoryTypeIncome)
 
-	authRepo := auth.NewRepository(db)
-	tokenManager := auth.NewTokenManager("test-secret", time.Hour, 24*time.Hour)
-	authService := auth.NewService(authRepo, tokenManager)
-	handler := NewHandler(NewService(NewRepository(db)))
+	authRepo := auth.NewRepository(db, sqlite.WriteDB{DB: db})
+	authService := auth.NewService(authRepo, auth.SessionConfig{})
+	handler := NewHandler(NewService(NewRepository(db, sqlite.WriteDB{DB: db}), idempotency.NewStore(sqlite.WriteDB{DB: db})))
 
 	router := chi.NewRouter()
 	RegisterRoutes(router, authService, handler)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
-	tokens, err := tokenManager.Issue(auth.TokenClaims{UserID: 1, Username: "alice"})
-	if err != nil {
-		t.Fatalf("Issue() error = %v", err)
-	}
+	tokens := issueMoneySession(t, authService, 1)
 
 	assertMoneyStatus(t, http.MethodGet, server.URL+"/api/money/transactions", tokens.AccessToken, nil, http.StatusOK)
 
 	incomeBody := map[string]any{
-		"dateISO":    "2026-06-18",
-		"accountId":  1,
-		"amount":     1000,
-		"categoryId": 3,
-		"kind":       "income",
-		"isGift":     true,
-		"notes":      "Salary",
+		"operationId": "op-create-income",
+		"dateISO":     "2026-06-18",
+		"accountId":   1,
+		"amount":      1000,
+		"categoryId":  3,
+		"kind":        "income",
+		"isGift":      true,
+		"notes":       "Salary",
 	}
 	incomeResponse := assertMoneyJSON(t, http.MethodPost, server.URL+"/api/money/transactions", tokens.AccessToken, incomeBody, http.StatusCreated)
 	incomeData := mustMoneyDataMap(t, incomeResponse)
 	incomeID := int64(incomeData["id"].(float64))
 
 	assertMoneyStatus(t, http.MethodPut, server.URL+"/api/money/transactions/"+jsonNumberID(incomeID), tokens.AccessToken, map[string]any{
-		"dateISO":   "2026-06-19",
-		"accountId": 1,
-		"amount":    1100,
-		"kind":      "income",
-		"isGift":    false,
-		"notes":     "Salary updated",
+		"operationId": "op-update-income",
+		"dateISO":     "2026-06-19",
+		"accountId":   1,
+		"amount":      1100,
+		"kind":        "income",
+		"isGift":      false,
+		"notes":       "Salary updated",
 	}, http.StatusOK)
 
+	zeroResponse := assertMoneyJSON(t, http.MethodPost, server.URL+"/api/money/transactions", tokens.AccessToken, map[string]any{
+		"operationId": "op-create-zero-expense",
+		"dateISO":     "2026-06-18",
+		"accountId":   1,
+		"amount":      0,
+		"categoryId":  2,
+		"kind":        "expense",
+		"notes":       "Refunded",
+	}, http.StatusCreated)
+	zeroID := int64(mustMoneyDataMap(t, zeroResponse)["id"].(float64))
+	var zeroAmount float64
+	if err := db.QueryRow(`SELECT amount FROM moneyTransaction WHERE id = ?`, zeroID).Scan(&zeroAmount); err != nil {
+		t.Fatalf("QueryRow() error = %v", err)
+	}
+	if zeroAmount != 0 {
+		t.Fatalf("zero expense amount = %v, want 0", zeroAmount)
+	}
+	assertMoneyStatus(t, http.MethodPost, server.URL+"/api/money/transactions", tokens.AccessToken, map[string]any{
+		"operationId": "op-create-negative-expense",
+		"dateISO":     "2026-06-18",
+		"accountId":   1,
+		"amount":      -1,
+		"kind":        "expense",
+	}, http.StatusBadRequest)
+	assertMoneyStatus(t, http.MethodPost, server.URL+"/api/money/transactions", tokens.AccessToken, map[string]any{
+		"operationId":   "op-create-zero-transfer",
+		"dateISO":       "2026-06-18",
+		"accountId":     1,
+		"amount":        0,
+		"twinAccountId": 2,
+		"twinAmount":    0,
+		"kind":          "transfer",
+	}, http.StatusBadRequest)
+
 	transferResponse := assertMoneyJSON(t, http.MethodPost, server.URL+"/api/money/transactions", tokens.AccessToken, map[string]any{
+		"operationId":   "op-create-transfer",
 		"dateISO":       "2026-06-20",
 		"accountId":     1,
 		"amount":        100,
@@ -180,6 +222,7 @@ func TestMoneyRoutesTransactionsCrud(t *testing.T) {
 	twinID := int64(transferData["twinId"].(float64))
 
 	assertMoneyStatus(t, http.MethodPut, server.URL+"/api/money/transactions/"+jsonNumberID(transferID), tokens.AccessToken, map[string]any{
+		"operationId":   "op-update-transfer",
 		"dateISO":       "2026-06-21",
 		"accountId":     1,
 		"amount":        120,
@@ -191,8 +234,8 @@ func TestMoneyRoutesTransactionsCrud(t *testing.T) {
 		"notes":         "Move updated",
 	}, http.StatusOK)
 
-	assertMoneyStatus(t, http.MethodDelete, server.URL+"/api/money/transactions/"+jsonNumberID(incomeID), tokens.AccessToken, nil, http.StatusOK)
-	assertMoneyStatus(t, http.MethodDelete, server.URL+"/api/money/transactions/"+jsonNumberID(transferID), tokens.AccessToken, nil, http.StatusOK)
+	assertMoneyStatus(t, http.MethodDelete, server.URL+"/api/money/transactions/"+jsonNumberID(incomeID), tokens.AccessToken, map[string]any{"operationId": "op-delete-income"}, http.StatusOK)
+	assertMoneyStatus(t, http.MethodDelete, server.URL+"/api/money/transactions/"+jsonNumberID(transferID), tokens.AccessToken, map[string]any{"operationId": "op-delete-transfer"}, http.StatusOK)
 
 	var count int64
 	if err := db.QueryRow(`SELECT COUNT(*) FROM moneyTransaction WHERE id IN (?, ?)`, transferID, twinID).Scan(&count); err != nil {
@@ -212,25 +255,22 @@ func TestMoneyRoutesInvestTransactions(t *testing.T) {
 	insertMoneyAsset(t, db, 1, 1, "Apple", "AAPL", AssetTypeStock, []int64{2})
 	insertMoneyAsset(t, db, 1, 2, "Bond", "OFZ", AssetTypeBond, []int64{2})
 
-	authRepo := auth.NewRepository(db)
-	tokenManager := auth.NewTokenManager("test-secret", time.Hour, 24*time.Hour)
-	authService := auth.NewService(authRepo, tokenManager)
-	handler := NewHandler(NewService(NewRepository(db)))
+	authRepo := auth.NewRepository(db, sqlite.WriteDB{DB: db})
+	authService := auth.NewService(authRepo, auth.SessionConfig{})
+	handler := NewHandler(NewService(NewRepository(db, sqlite.WriteDB{DB: db}), idempotency.NewStore(sqlite.WriteDB{DB: db})))
 
 	router := chi.NewRouter()
 	RegisterRoutes(router, authService, handler)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
-	tokens, err := tokenManager.Issue(auth.TokenClaims{UserID: 1, Username: "alice"})
-	if err != nil {
-		t.Fatalf("Issue() error = %v", err)
-	}
+	tokens := issueMoneySession(t, authService, 1)
 
 	buyResponse := assertMoneyJSON(t, http.MethodPost, server.URL+"/api/money/transactions", tokens.AccessToken, map[string]any{
-		"dateISO":   "2026-06-18",
-		"accountId": 2,
-		"kind":      "invest_buy",
+		"operationId": "op-buy",
+		"dateISO":     "2026-06-18",
+		"accountId":   2,
+		"kind":        "invest_buy",
 		"detailsJSON": map[string]any{
 			"assetId":          1,
 			"quantity":         2,
@@ -242,9 +282,10 @@ func TestMoneyRoutesInvestTransactions(t *testing.T) {
 	buyID := int64(buyData["id"].(float64))
 
 	assertMoneyStatus(t, http.MethodPut, server.URL+"/api/money/transactions/"+jsonNumberID(buyID), tokens.AccessToken, map[string]any{
-		"dateISO":   "2026-06-19",
-		"accountId": 2,
-		"kind":      "invest_buy",
+		"operationId": "op-update-buy-1",
+		"dateISO":     "2026-06-19",
+		"accountId":   2,
+		"kind":        "invest_buy",
 		"detailsJSON": map[string]any{
 			"assetId":          1,
 			"quantity":         3,
@@ -254,9 +295,10 @@ func TestMoneyRoutesInvestTransactions(t *testing.T) {
 	}, http.StatusOK)
 
 	assertMoneyStatus(t, http.MethodPost, server.URL+"/api/money/transactions", tokens.AccessToken, map[string]any{
-		"dateISO":   "2026-06-20",
-		"accountId": 2,
-		"kind":      "invest_sell",
+		"operationId": "op-sell",
+		"dateISO":     "2026-06-20",
+		"accountId":   2,
+		"kind":        "invest_sell",
 		"detailsJSON": map[string]any{
 			"assetId":          1,
 			"quantity":         1,
@@ -266,10 +308,11 @@ func TestMoneyRoutesInvestTransactions(t *testing.T) {
 	}, http.StatusCreated)
 
 	assertMoneyStatus(t, http.MethodPost, server.URL+"/api/money/transactions", tokens.AccessToken, map[string]any{
-		"dateISO":   "2026-06-21",
-		"accountId": 2,
-		"amount":    15,
-		"kind":      "invest_dividend",
+		"operationId": "op-dividend",
+		"dateISO":     "2026-06-21",
+		"accountId":   2,
+		"amount":      15,
+		"kind":        "invest_dividend",
 		"detailsJSON": map[string]any{
 			"assetId": 2,
 		},
@@ -277,15 +320,18 @@ func TestMoneyRoutesInvestTransactions(t *testing.T) {
 
 	snapshotResponse := assertMoneyJSON(t, http.MethodGet, server.URL+"/api/money/snapshot", tokens.AccessToken, nil, http.StatusOK)
 	snapshotData := snapshotResponse["data"].(map[string]any)
-	trades := snapshotData["investAssetTrades"].([]any)
-	if len(trades) != 2 {
-		t.Fatalf("investAssetTrades len = %d, want 2", len(trades))
+	if _, exists := snapshotData["investAssetTrades"]; exists {
+		t.Fatal("snapshot must not carry investAssetTrades")
+	}
+	if transactions := snapshotData["transactions"].([]any); len(transactions) < 3 {
+		t.Fatalf("snapshot transactions len = %d, want at least 3 (buy, sell, dividend)", len(transactions))
 	}
 
 	assertMoneyStatus(t, http.MethodPost, server.URL+"/api/money/transactions", tokens.AccessToken, map[string]any{
-		"dateISO":   "2026-06-22",
-		"accountId": 1,
-		"kind":      "invest_buy",
+		"operationId": "op-invalid-account",
+		"dateISO":     "2026-06-22",
+		"accountId":   1,
+		"kind":        "invest_buy",
 		"detailsJSON": map[string]any{
 			"assetId":          1,
 			"quantity":         1,
@@ -295,9 +341,10 @@ func TestMoneyRoutesInvestTransactions(t *testing.T) {
 	}, http.StatusBadRequest)
 
 	assertMoneyStatus(t, http.MethodPut, server.URL+"/api/money/transactions/"+jsonNumberID(buyID), tokens.AccessToken, map[string]any{
-		"dateISO":   "2026-06-19",
-		"accountId": 2,
-		"kind":      "invest_buy",
+		"operationId": "op-update-buy-2",
+		"dateISO":     "2026-06-19",
+		"accountId":   2,
+		"kind":        "invest_buy",
 		"detailsJSON": map[string]any{
 			"assetId":          2,
 			"quantity":         3,
@@ -317,22 +364,18 @@ func TestMoneyRoutesTradesAndRateHistory(t *testing.T) {
 	insertMoneyRateHistory(t, db, 1, "2026-06-10", `{"USD":1,"RUB":90,"AAPL":210}`)
 	insertMoneyRateHistory(t, db, 2, "2026-06-30", `{"USD":1,"RUB":91,"AAPL":220}`)
 
-	handler := NewHandler(NewServiceWithClock(NewRepository(db), fixedMoneyClock{now: time.Date(2026, time.June, 30, 12, 0, 0, 0, time.UTC)}))
-	authRepo := auth.NewRepository(db)
-	tokenManager := auth.NewTokenManager("test-secret", time.Hour, 24*time.Hour)
-	authService := auth.NewService(authRepo, tokenManager)
+	handler := NewHandler(NewServiceWithClock(NewRepository(db, sqlite.WriteDB{DB: db}), idempotency.NewStore(sqlite.WriteDB{DB: db}), fixedMoneyClock{now: time.Date(2026, time.June, 30, 12, 0, 0, 0, time.UTC)}))
+	authRepo := auth.NewRepository(db, sqlite.WriteDB{DB: db})
+	authService := auth.NewService(authRepo, auth.SessionConfig{})
 
 	router := chi.NewRouter()
 	RegisterRoutes(router, authService, handler)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
-	tokens, err := tokenManager.Issue(auth.TokenClaims{UserID: 1, Username: "alice"})
-	if err != nil {
-		t.Fatalf("Issue() error = %v", err)
-	}
+	tokens := issueMoneySession(t, authService, 1)
 
-	if _, err := handler.service.CreateTransaction(context.Background(), 1, TransactionInput{
+	if _, _, err := handler.service.CreateTransaction(context.Background(), 1, "op-trade-buy", TransactionInput{
 		DateISO:   "2026-06-15",
 		AccountID: 2,
 		Kind:      TransactionKindInvestBuy,
@@ -346,14 +389,13 @@ func TestMoneyRoutesTradesAndRateHistory(t *testing.T) {
 		t.Fatalf("CreateTransaction() error = %v", err)
 	}
 
-	tradesResponse := assertMoneyJSON(t, http.MethodGet, server.URL+"/api/money/trades", tokens.AccessToken, nil, http.StatusOK)
-	trades := tradesResponse["data"].([]any)
-	if len(trades) != 1 {
-		t.Fatalf("trades len = %d, want 1", len(trades))
+	transactionsResponse := assertMoneyJSON(t, http.MethodGet, server.URL+"/api/money/transactions", tokens.AccessToken, nil, http.StatusOK)
+	transactions := transactionsResponse["data"].([]any)
+	if len(transactions) != 1 {
+		t.Fatalf("transactions len = %d, want 1", len(transactions))
 	}
-	trade := trades[0].(map[string]any)
-	if trade["assetTicker"] != "AAPL" || trade["kind"] != "invest_buy" {
-		t.Fatalf("trade = %#v", trade)
+	if transaction := transactions[0].(map[string]any); transaction["kind"] != "invest_buy" {
+		t.Fatalf("transaction = %#v", transaction)
 	}
 
 	rateHistoryResponse := assertMoneyJSON(t, http.MethodGet, server.URL+"/api/money/rate-history", tokens.AccessToken, nil, http.StatusOK)
@@ -377,7 +419,21 @@ func TestMoneyRoutesTradesAndRateHistory(t *testing.T) {
 	}
 }
 
-func assertMoneyStatus(t *testing.T, method string, url string, accessToken string, body any, wantStatus int) {
+type moneySession struct {
+	AccessToken string
+}
+
+func issueMoneySession(t *testing.T, service *auth.Service, userID int64) moneySession {
+	t.Helper()
+
+	session, err := service.CreateSession(t.Context(), userID)
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	return moneySession{AccessToken: session.Cookie}
+}
+
+func assertMoneyStatus(t *testing.T, method string, url string, sessionCookie string, body any, wantStatus int) {
 	t.Helper()
 
 	var requestBody *bytes.Reader
@@ -395,7 +451,7 @@ func assertMoneyStatus(t *testing.T, method string, url string, accessToken stri
 	if err != nil {
 		t.Fatalf("http.NewRequest() error = %v", err)
 	}
-	request.Header.Set("Authorization", "Bearer "+accessToken)
+	request.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sessionCookie})
 	request.Header.Set("Content-Type", "application/json")
 
 	response, err := http.DefaultClient.Do(request)
@@ -411,7 +467,7 @@ func assertMoneyStatus(t *testing.T, method string, url string, accessToken stri
 	}
 }
 
-func assertMoneyJSON(t *testing.T, method string, url string, accessToken string, body any, wantStatus int) map[string]any {
+func assertMoneyJSON(t *testing.T, method string, url string, sessionCookie string, body any, wantStatus int) map[string]any {
 	t.Helper()
 
 	var requestBody *bytes.Reader
@@ -429,7 +485,7 @@ func assertMoneyJSON(t *testing.T, method string, url string, accessToken string
 	if err != nil {
 		t.Fatalf("http.NewRequest() error = %v", err)
 	}
-	request.Header.Set("Authorization", "Bearer "+accessToken)
+	request.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sessionCookie})
 	request.Header.Set("Content-Type", "application/json")
 
 	response, err := http.DefaultClient.Do(request)

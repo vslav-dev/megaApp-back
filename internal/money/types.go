@@ -60,10 +60,14 @@ type Currency struct {
 }
 
 type Category struct {
-	ID           int64        `json:"id"`
-	Name         string       `json:"name"`
-	ParentID     *int64       `json:"parentId"`
-	CategoryType CategoryType `json:"categoryType"`
+	ID             int64        `json:"id"`
+	Name           string       `json:"name"`
+	ParentID       *int64       `json:"parentId"`
+	CategoryType   CategoryType `json:"categoryType"`
+	HiddenOnCharts bool         `json:"hiddenOnCharts"`
+	Hue            *int64       `json:"hue"`
+	Lightness      *int64       `json:"lightness"`
+	Saturation     *int64       `json:"saturation"`
 }
 
 type Account struct {
@@ -97,6 +101,7 @@ type Transaction struct {
 	Notes       *string         `json:"notes"`
 	DetailsJSON *string         `json:"detailsJSON"`
 	TwinID      *int64          `json:"twinId"`
+	Version     int64           `json:"version"`
 }
 
 type InvestAssetTrade struct {
@@ -126,14 +131,13 @@ type SnapshotRateHistory struct {
 }
 
 type Snapshot struct {
-	Currencies        []Currency            `json:"currencies"`
-	Categories        []Category            `json:"categories"`
-	Organizations     []Organization        `json:"organizations"`
-	Accounts          []Account             `json:"accounts"`
-	Assets            []Asset               `json:"assets"`
-	InvestAssetTrades []InvestAssetTrade    `json:"investAssetTrades"`
-	Transactions      []Transaction         `json:"transactions"`
-	RateHistory       []SnapshotRateHistory `json:"rateHistory"`
+	Currencies    []Currency            `json:"currencies"`
+	Categories    []Category            `json:"categories"`
+	Organizations []Organization        `json:"organizations"`
+	Accounts      []Account             `json:"accounts"`
+	Assets        []Asset               `json:"assets"`
+	Transactions  []Transaction         `json:"transactions"`
+	RateHistory   []SnapshotRateHistory `json:"rateHistory"`
 }
 
 type OrganizationInput struct {
@@ -150,9 +154,13 @@ type CurrencyInput struct {
 }
 
 type CategoryInput struct {
-	Name         string       `json:"name"`
-	ParentID     *int64       `json:"parentId"`
-	CategoryType CategoryType `json:"categoryType"`
+	Name           string       `json:"name"`
+	ParentID       *int64       `json:"parentId"`
+	CategoryType   CategoryType `json:"categoryType"`
+	HiddenOnCharts bool         `json:"hiddenOnCharts"`
+	Hue            *int64       `json:"hue"`
+	Lightness      *int64       `json:"lightness"`
+	Saturation     *int64       `json:"saturation"`
 }
 
 type AccountInput struct {
@@ -174,6 +182,7 @@ type AssetInput struct {
 }
 
 type TransactionInput struct {
+	OperationID       string          `json:"operationId"`
 	DateISO           string          `json:"dateISO"`
 	AccountID         int64           `json:"accountId"`
 	Amount            float64         `json:"amount"`
@@ -188,6 +197,7 @@ type TransactionInput struct {
 }
 
 type CreateTransactionResult struct {
-	ID     int64
-	TwinID *int64
+	ID      int64  `json:"id"`
+	TwinID  *int64 `json:"twinId,omitempty"`
+	Version int64  `json:"version"`
 }

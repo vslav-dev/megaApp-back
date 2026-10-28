@@ -4,14 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"megaapp-back/internal/platform/sqlite"
 )
 
 type Repository struct {
-	db *sql.DB
+	db    *sql.DB
+	write sqlite.WriteDB
 }
 
-func NewRepository(db *sql.DB) *Repository {
-	return &Repository{db: db}
+func NewRepository(read *sql.DB, write sqlite.WriteDB) *Repository {
+	return &Repository{db: read, write: write}
 }
 
 func (r *Repository) ListRateHistoryRange(ctx context.Context, fromISO string, toISO string) ([]RateHistoryRow, error) {
@@ -41,7 +44,7 @@ func (r *Repository) ListRateHistoryRange(ctx context.Context, fromISO string, t
 }
 
 func (r *Repository) UpsertRateHistoryEntry(ctx context.Context, dateISO string, ratesJSON string) error {
-	_, err := r.db.ExecContext(ctx, `
+	_, err := r.write.ExecContext(ctx, `
 		INSERT INTO moneyRateHistory (dateISO, ratesJson)
 		VALUES (?, ?)
 		ON CONFLICT(dateISO) DO UPDATE SET ratesJson = excluded.ratesJson

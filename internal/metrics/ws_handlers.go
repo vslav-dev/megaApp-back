@@ -2,11 +2,12 @@ package metrics
 
 import (
 	"context"
+	"encoding/json"
 
 	"megaapp-back/internal/ws"
 )
 
-func NewSubscribeHandler(service *Service, realtime *Realtime, flatlineClient *FlatlineClient) ws.MessageHandler {
+func NewSubscribeHandler(service *Service, realtime *Realtime) ws.MessageHandler {
 	return func(client *ws.Client, message map[string]any) error {
 		ctx := context.Background()
 
@@ -18,22 +19,13 @@ func NewSubscribeHandler(service *Service, realtime *Realtime, flatlineClient *F
 			return nil
 		}
 
-		realtime.Subscribe(client)
-
-		var cursor int64
-		if rawCursor, ok := message["cursor"].(float64); ok {
-			cursor = int64(rawCursor)
-		}
-
-		points, err := flatlineClient.Since(ctx, cursor)
+		scope, err := decodeSubscribeScope(message)
 		if err != nil {
 			return err
 		}
 
-		return client.SendJSON(map[string]any{
-			"type":    "METRICS_UPDATE",
-			"payload": DetailUpdate{Points: points},
-		})
+		realtime.Subscribe(client, scope)
+		return nil
 	}
 }
 
@@ -42,4 +34,23 @@ func NewUnsubscribeHandler(realtime *Realtime) ws.MessageHandler {
 		realtime.Unsubscribe(client)
 		return nil
 	}
+}
+
+func decodeSubscribeScope(message map[string]any) (map[scopeKey]struct{}, error) {
+	payload, ok := message["payload"]
+	if !ok {
+		return nil, ErrInvalidScope
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var body struct {
+		Scope []ScopeEntry `json:"scope"`
+	}
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		return nil, err
+	}
+	return buildScopeSet(body.Scope)
 }

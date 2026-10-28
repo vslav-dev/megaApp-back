@@ -19,7 +19,6 @@ const openRouterBaseURL = "https://openrouter.ai/api/v1"
 
 type ProductGenerator interface {
 	GenerateProduct(ctx context.Context, description string) (ProductPreviewData, error)
-	AnalyzeVoice(ctx context.Context, transcript string) (ProductPreviewData, error)
 }
 
 type OpenRouterProductGeneratorConfig struct {
@@ -97,10 +96,6 @@ func NewOpenRouterProductGenerator(cfg OpenRouterProductGeneratorConfig) (*OpenR
 
 func (g *OpenRouterProductGenerator) GenerateProduct(ctx context.Context, description string) (ProductPreviewData, error) {
 	return g.generate(ctx, productGenerationSystemPrompt, fmt.Sprintf(productGenerationUserPrompt, strings.TrimSpace(description)))
-}
-
-func (g *OpenRouterProductGenerator) AnalyzeVoice(ctx context.Context, transcript string) (ProductPreviewData, error) {
-	return g.generate(ctx, productGenerationSystemPrompt, fmt.Sprintf(voiceGenerationUserPrompt, strings.TrimSpace(transcript)))
 }
 
 func (g *OpenRouterProductGenerator) generate(ctx context.Context, systemPrompt string, userPrompt string) (ProductPreviewData, error) {
@@ -185,24 +180,76 @@ func parseAIProductResponse(raw string) (ProductPreviewData, error) {
 	return result, nil
 }
 
+// trailingThinkTagPattern strips everything up to and including the last "</think>" marker.
+// Reasoning ("thinking") models on OpenRouter (Qwen's thinking variants, DeepSeek-R1, etc.) emit
+// a chain-of-thought before the actual JSON answer. The opening <think> tag is often swallowed by
+// the provider before it reaches us, but the closing </think> tag reliably marks where the
+// reasoning ends and the real answer begins, so matching is anchored on that alone. The greedy
+// `.*` lands on the last occurrence if more than one shows up. Models that never think out loud
+// have no </think> at all, so nothing is stripped and the old plain-JSON/fenced-JSON path runs
+// unchanged — this keeps working the moment a non-reasoning model is swapped back in.
+var trailingThinkTagPattern = regexp.MustCompile(`(?is)\A.*</think>\s*`)
+
 func extractJSON(raw string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if strings.HasPrefix(trimmed, "```") {
-		trimmed = strings.TrimPrefix(trimmed, "```json")
-		trimmed = strings.TrimPrefix(trimmed, "```")
-		trimmed = strings.TrimSuffix(trimmed, "```")
-		trimmed = strings.TrimSpace(trimmed)
-	}
+	trimmed := stripCodeFence(trailingThinkTagPattern.ReplaceAllString(raw, ""))
+
 	if json.Valid([]byte(trimmed)) {
 		return trimmed, nil
 	}
 
-	matcher := regexp.MustCompile(`\{[\s\S]*\}`)
-	candidate := matcher.FindString(trimmed)
-	if candidate == "" || !json.Valid([]byte(candidate)) {
-		return "", errors.New("no valid json found in ai response")
+	if candidate, ok := lastBalancedJSONObject(trimmed); ok {
+		return candidate, nil
 	}
-	return candidate, nil
+
+	return "", errors.New("no valid json found in ai response")
+}
+
+func stripCodeFence(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, "```") {
+		return trimmed
+	}
+	trimmed = strings.TrimPrefix(trimmed, "```json")
+	trimmed = strings.TrimPrefix(trimmed, "```")
+	trimmed = strings.TrimSuffix(trimmed, "```")
+	return strings.TrimSpace(trimmed)
+}
+
+// lastBalancedJSONObject scans for brace-balanced {...} spans and returns the last one that is
+// itself valid JSON. This replaces a naive first-'{'-to-last-'}' match, which breaks the moment any
+// stray brace shows up ahead of the real answer (leftover reasoning text, a worked example echoed
+// back) — such a match spans from the stray brace all the way to the real closing brace and is
+// neither valid JSON nor a useful error. Depth-tracking keeps each candidate self-contained, and
+// picking the last valid one favors the final answer over anything earlier in the text.
+func lastBalancedJSONObject(text string) (string, bool) {
+	var (
+		candidate string
+		found     bool
+		depth     int
+		start     int
+	)
+	for i, r := range text {
+		switch r {
+		case '{':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case '}':
+			if depth == 0 {
+				continue
+			}
+			depth--
+			if depth == 0 {
+				span := text[start : i+1]
+				if json.Valid([]byte(span)) {
+					candidate = span
+					found = true
+				}
+			}
+		}
+	}
+	return candidate, found
 }
 
 func roundOneDecimal(value float64) float64 {
@@ -225,5 +272,3 @@ func validatePreviewData(data ProductPreviewData) error {
 const productGenerationSystemPrompt = "You analyze food descriptions and return one generalized Russian product with nutrition. Respond with JSON only. Fields: generalizedName, kcals, protein, fat, carbs, fiber, description. Use Russian for generalizedName and description. Generalize brands and variants to the core product. Keep values realistic per 100g."
 
 const productGenerationUserPrompt = "Generate a new generalized food candidate from this user query: %s"
-
-const voiceGenerationUserPrompt = "Generate a generalized food candidate from this voice transcript: %s"

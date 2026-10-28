@@ -68,7 +68,7 @@ func (r *Repository) GetPersonalNormHistory(ctx context.Context, userID int64) (
 }
 
 func (r *Repository) InsertPersonalKcalHistory(ctx context.Context, userID int64, catalogueID int64, yearMonth string, kcalsPer100g float64, createdAt string) error {
-	_, err := r.db.ExecContext(ctx, `
+	_, err := r.write.ExecContext(ctx, `
 		INSERT INTO foodPersonalKcalHistory (usersId, foodCatalogueId, yearMonth, kcalsPer100g, createdAt)
 		VALUES (?, ?, ?, ?, ?)
 	`, userID, catalogueID, yearMonth, kcalsPer100g, createdAt)
@@ -79,7 +79,7 @@ func (r *Repository) InsertPersonalKcalHistory(ctx context.Context, userID int64
 }
 
 func (r *Repository) InsertPersonalNormHistory(ctx context.Context, userID int64, yearMonth string, normKcals float64, kcalPerKg float64, createdAt string) error {
-	_, err := r.db.ExecContext(ctx, `
+	_, err := r.write.ExecContext(ctx, `
 		INSERT INTO foodPersonalNormHistory (usersId, yearMonth, normKcals, kcalPerKg, createdAt)
 		VALUES (?, ?, ?, ?, ?)
 	`, userID, yearMonth, normKcals, kcalPerKg, createdAt)
@@ -90,20 +90,20 @@ func (r *Repository) InsertPersonalNormHistory(ctx context.Context, userID int64
 }
 
 func (r *Repository) DeletePersonalHistoryForUser(ctx context.Context, userID int64) error {
-	if _, err := r.db.ExecContext(ctx, `DELETE FROM foodPersonalKcalHistory WHERE usersId = ?`, userID); err != nil {
+	if _, err := r.write.ExecContext(ctx, `DELETE FROM foodPersonalKcalHistory WHERE usersId = ?`, userID); err != nil {
 		return fmt.Errorf("delete personal kcal history for user: %w", err)
 	}
-	if _, err := r.db.ExecContext(ctx, `DELETE FROM foodPersonalNormHistory WHERE usersId = ?`, userID); err != nil {
+	if _, err := r.write.ExecContext(ctx, `DELETE FROM foodPersonalNormHistory WHERE usersId = ?`, userID); err != nil {
 		return fmt.Errorf("delete personal norm history for user: %w", err)
 	}
 	return nil
 }
 
 func (r *Repository) DeletePersonalHistoryForAllUsers(ctx context.Context) error {
-	if _, err := r.db.ExecContext(ctx, `DELETE FROM foodPersonalKcalHistory`); err != nil {
+	if _, err := r.write.ExecContext(ctx, `DELETE FROM foodPersonalKcalHistory`); err != nil {
 		return fmt.Errorf("delete personal kcal history for all users: %w", err)
 	}
-	if _, err := r.db.ExecContext(ctx, `DELETE FROM foodPersonalNormHistory`); err != nil {
+	if _, err := r.write.ExecContext(ctx, `DELETE FROM foodPersonalNormHistory`); err != nil {
 		return fmt.Errorf("delete personal norm history for all users: %w", err)
 	}
 	return nil

@@ -1,6 +1,4 @@
-data/*.db
-data/*.db-wal
-data/*.db-shm
+data/
 backups/
 public/images/
 .env
@@ -11,3 +9,8 @@ public/images/
 research
 metrics-outbox.*.ndjson
 metrics-outbox.ack.json
+bin/
+frontend-performance.ndjson
+frontend-performance-*.ndjson
+logs-archive/
+*.zip

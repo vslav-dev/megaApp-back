@@ -3,6 +3,8 @@ package legacy
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 )
 
@@ -11,9 +13,11 @@ type ErrorKind string
 const (
 	ErrorKindValidation      ErrorKind = "validation"
 	ErrorKindUnauthorized    ErrorKind = "unauthorized"
+	ErrorKindForbidden       ErrorKind = "forbidden"
 	ErrorKindNotFound        ErrorKind = "not_found"
 	ErrorKindConflict        ErrorKind = "conflict"
-	ErrorKindInternal        ErrorKind = "internal"
+	ErrorKindTooManyRequests ErrorKind = "too_many_requests"
+	ErrorKindInternal       ErrorKind = "internal"
 	ErrorKindExternal        ErrorKind = "external"
 	ErrorKindRequestTooLarge ErrorKind = "request_too_large"
 )
@@ -25,13 +29,16 @@ type AppError struct {
 }
 
 func (e *AppError) Error() string {
-	if e.Message != "" {
+	switch {
+	case e.Message != "" && e.Cause != nil:
+		return fmt.Sprintf("%s: %v", e.Message, e.Cause)
+	case e.Message != "":
 		return e.Message
-	}
-	if e.Cause != nil {
+	case e.Cause != nil:
 		return e.Cause.Error()
+	default:
+		return string(e.Kind)
 	}
-	return string(e.Kind)
 }
 
 func (e *AppError) Unwrap() error {
@@ -74,10 +81,14 @@ func ErrorStatusCodeOf(err error, fallback int) int {
 		return http.StatusBadRequest
 	case ErrorKindUnauthorized:
 		return http.StatusUnauthorized
+	case ErrorKindForbidden:
+		return http.StatusForbidden
 	case ErrorKindNotFound:
 		return http.StatusNotFound
 	case ErrorKindConflict:
 		return http.StatusConflict
+	case ErrorKindTooManyRequests:
+		return http.StatusTooManyRequests
 	case ErrorKindExternal:
 		return http.StatusBadGateway
 	case ErrorKindRequestTooLarge:
@@ -87,6 +98,31 @@ func ErrorStatusCodeOf(err error, fallback int) int {
 	default:
 		return fallback
 	}
+}
+
+// logger is the sink for server-side error logging done by the WriteApp*Error helpers below.
+// Defaults to slog.Default() so the package works without wiring; SetLogger overrides it once
+// at startup — mirrors the ws.Hub logger pattern.
+var logger = slog.Default()
+
+// SetLogger overrides the default logger (slog.Default()) used to record errors that reach
+// WriteAppMessageError/WriteAppDetailError/WriteAppResultError before they're turned into an
+// HTTP response — without this, a 5xx leaves the client with a generic message and the server
+// with no trace of what actually failed.
+func SetLogger(l *slog.Logger) {
+	if l == nil {
+		return
+	}
+	logger = l
+}
+
+// logServerError records the real error behind a 5xx response. 4xx responses (validation,
+// not found, etc.) are normal client-facing outcomes, not incidents, so they're skipped.
+func logServerError(err error, statusCode int) {
+	if err == nil || statusCode < 500 {
+		return
+	}
+	logger.Error("app_error", "status_code", statusCode, "kind", string(ErrorKindOf(err)), "error", err)
 }
 
 func WriteJSON(w http.ResponseWriter, statusCode int, payload any) {
@@ -108,15 +144,21 @@ func WriteResultError(w http.ResponseWriter, statusCode int, message string) {
 }
 
 func WriteAppMessageError(w http.ResponseWriter, err error, fallbackStatus int, fallbackMessage string) {
-	WriteMessage(w, ErrorStatusCodeOf(err, fallbackStatus), ErrorMessageOf(err, fallbackMessage))
+	statusCode := ErrorStatusCodeOf(err, fallbackStatus)
+	logServerError(err, statusCode)
+	WriteMessage(w, statusCode, ErrorMessageOf(err, fallbackMessage))
 }
 
 func WriteAppDetailError(w http.ResponseWriter, err error, fallbackStatus int, fallbackMessage string) {
-	WriteDetail(w, ErrorStatusCodeOf(err, fallbackStatus), ErrorMessageOf(err, fallbackMessage))
+	statusCode := ErrorStatusCodeOf(err, fallbackStatus)
+	logServerError(err, statusCode)
+	WriteDetail(w, statusCode, ErrorMessageOf(err, fallbackMessage))
 }
 
 func WriteAppResultError(w http.ResponseWriter, err error, fallbackStatus int, fallbackMessage string) {
-	WriteResultError(w, ErrorStatusCodeOf(err, fallbackStatus), ErrorMessageOf(err, fallbackMessage))
+	statusCode := ErrorStatusCodeOf(err, fallbackStatus)
+	logServerError(err, statusCode)
+	WriteResultError(w, statusCode, ErrorMessageOf(err, fallbackMessage))
 }
 
 func DecodeJSON(r *http.Request, dst any) error {

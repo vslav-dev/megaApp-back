@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
+
+	"megaapp-back/internal/platform/sqlite"
 )
 
 type DiaryRow struct {
@@ -13,6 +16,7 @@ type DiaryRow struct {
 	FoodCatalogueID int64
 	FoodWeight      int64
 	History         string
+	Version         int64
 }
 
 type WeightRow struct {
@@ -30,6 +34,7 @@ type CatalogueRow struct {
 	Carbs       sql.NullFloat64
 	Fiber       sql.NullFloat64
 	Description sql.NullString
+	Archived    bool
 }
 
 type StatsDiaryRow struct {
@@ -39,16 +44,17 @@ type StatsDiaryRow struct {
 }
 
 type Repository struct {
-	db *sql.DB
+	db    *sql.DB
+	write sqlite.WriteDB
 }
 
-func NewRepository(db *sql.DB) *Repository {
-	return &Repository{db: db}
+func NewRepository(read *sql.DB, write sqlite.WriteDB) *Repository {
+	return &Repository{db: read, write: write}
 }
 
 func (r *Repository) GetDiaryRange(ctx context.Context, userID int64, startDate string, endDate string) ([]DiaryRow, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, dateISO, foodCatalogueId, foodWeight, history
+		SELECT id, dateISO, foodCatalogueId, foodWeight, history, ver
 		FROM foodDiary
 		WHERE usersId = ? AND dateISO BETWEEN ? AND ?
 		ORDER BY dateISO ASC
@@ -63,7 +69,7 @@ func (r *Repository) GetDiaryRange(ctx context.Context, userID int64, startDate 
 
 func (r *Repository) GetAllDiaryEntries(ctx context.Context, userID int64) ([]DiaryRow, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, dateISO, foodCatalogueId, foodWeight, history
+		SELECT id, dateISO, foodCatalogueId, foodWeight, history, ver
 		FROM foodDiary
 		WHERE usersId = ?
 		ORDER BY dateISO ASC, id ASC
@@ -108,7 +114,7 @@ func (r *Repository) GetAllWeightEntries(ctx context.Context, userID int64) ([]W
 
 func (r *Repository) GetCatalogue(ctx context.Context) ([]CatalogueRow, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, name, kcals, protein, fat, carbs, fiber, description, legacyName
+		SELECT id, name, kcals, protein, fat, carbs, fiber, description, legacyName, archived
 		FROM foodCatalogue
 		ORDER BY name ASC
 	`)
@@ -120,7 +126,7 @@ func (r *Repository) GetCatalogue(ctx context.Context) ([]CatalogueRow, error) {
 	var result []CatalogueRow
 	for rows.Next() {
 		var row CatalogueRow
-		if err := rows.Scan(&row.ID, &row.Name, &row.Kcals, &row.Protein, &row.Fat, &row.Carbs, &row.Fiber, &row.Description, &row.LegacyName); err != nil {
+		if err := rows.Scan(&row.ID, &row.Name, &row.Kcals, &row.Protein, &row.Fat, &row.Carbs, &row.Fiber, &row.Description, &row.LegacyName, &row.Archived); err != nil {
 			return nil, fmt.Errorf("scan catalogue row: %w", err)
 		}
 		result = append(result, row)
@@ -135,13 +141,13 @@ func (r *Repository) GetCatalogue(ctx context.Context) ([]CatalogueRow, error) {
 
 func (r *Repository) GetCatalogueEntry(ctx context.Context, catalogueID int64) (*CatalogueRow, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, name, kcals, protein, fat, carbs, fiber, description, legacyName
+		SELECT id, name, kcals, protein, fat, carbs, fiber, description, legacyName, archived
 		FROM foodCatalogue
 		WHERE id = ?
 	`, catalogueID)
 
 	var result CatalogueRow
-	if err := row.Scan(&result.ID, &result.Name, &result.Kcals, &result.Protein, &result.Fat, &result.Carbs, &result.Fiber, &result.Description, &result.LegacyName); err != nil {
+	if err := row.Scan(&result.ID, &result.Name, &result.Kcals, &result.Protein, &result.Fat, &result.Carbs, &result.Fiber, &result.Description, &result.LegacyName, &result.Archived); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -160,20 +166,6 @@ func (r *Repository) CountDiaryEntriesByCatalogueID(ctx context.Context, catalog
 	}
 
 	return count, nil
-}
-
-func (r *Repository) GetUserGoal(ctx context.Context, userID int64) (string, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT goal FROM settings WHERE usersId = ?`, userID)
-
-	var goal sql.NullString
-	if err := row.Scan(&goal); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", nil
-		}
-		return "", fmt.Errorf("get user goal: %w", err)
-	}
-
-	return goal.String, nil
 }
 
 func (r *Repository) GetUserFirstDate(ctx context.Context, userID int64) (string, error) {
@@ -219,7 +211,7 @@ func scanDiaryRows(rows *sql.Rows) ([]DiaryRow, error) {
 	var result []DiaryRow
 	for rows.Next() {
 		var row DiaryRow
-		if err := rows.Scan(&row.ID, &row.DateISO, &row.FoodCatalogueID, &row.FoodWeight, &row.History); err != nil {
+		if err := rows.Scan(&row.ID, &row.DateISO, &row.FoodCatalogueID, &row.FoodWeight, &row.History, &row.Version); err != nil {
 			return nil, fmt.Errorf("scan diary row: %w", err)
 		}
 		result = append(result, row)
@@ -241,6 +233,55 @@ func scanWeightRows(rows *sql.Rows) ([]WeightRow, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate weight rows: %w", err)
+	}
+	return result, nil
+}
+
+// ProductHistoryRow is one foodDiary event (one consumption instance) for the product-history
+// list — every INSERT is its own row (no per-day merging, see write_repo.go), so this is already
+// event-level, not day-aggregated.
+type ProductHistoryRow struct {
+	DateISO         string
+	FoodCatalogueID int64
+	FoodWeight      int64
+}
+
+// GetProductHistory returns every foodDiary row for the given catalogue ids, newest first
+// (dateISO DESC, id DESC).
+func (r *Repository) GetProductHistory(ctx context.Context, userID int64, catalogueIDs []int64) ([]ProductHistoryRow, error) {
+	if len(catalogueIDs) == 0 {
+		return []ProductHistoryRow{}, nil
+	}
+
+	placeholders := make([]string, 0, len(catalogueIDs))
+	args := make([]any, 0, len(catalogueIDs)+1)
+	args = append(args, userID)
+	for _, id := range catalogueIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT dateISO, foodCatalogueId, foodWeight
+		FROM foodDiary
+		WHERE usersId = ? AND foodCatalogueId IN (`+strings.Join(placeholders, ",")+`)
+		ORDER BY dateISO DESC, id DESC
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get product history: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]ProductHistoryRow, 0)
+	for rows.Next() {
+		var row ProductHistoryRow
+		if err := rows.Scan(&row.DateISO, &row.FoodCatalogueID, &row.FoodWeight); err != nil {
+			return nil, fmt.Errorf("scan product history row: %w", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate product history rows: %w", err)
 	}
 	return result, nil
 }

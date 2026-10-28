@@ -14,7 +14,14 @@ import (
 )
 
 type BatchFetcher interface {
-	Fetch(ctx context.Context, fromISO string, toISO string, retry RetryConfig) (map[string]map[string]float64, []string, error)
+	Fetch(ctx context.Context, fromISO string, toISO string, retry RetryConfig) (map[string]map[string]float64, BatchOutcome, error)
+}
+
+// BatchOutcome separates a batch fetch's two kinds of noteworthy ticker: Failures got no
+// price from any source, Degraded got one but only after earlier sources failed first.
+type BatchOutcome struct {
+	Failures []TickerFailure
+	Degraded []TickerFailure
 }
 
 type tickerSource struct {
@@ -45,13 +52,14 @@ type moexRow struct {
 }
 
 var coinGeckoIDByTicker = map[string]string{
-	"BTC": "bitcoin",
-	"ETH": "ethereum",
-}
-
-var cryptoCompareSymbolByTicker = map[string]string{
-	"GLM": "GLM",
-	"ARK": "ARK",
+	"BTC":  "bitcoin",
+	"ETH":  "ethereum",
+	"XRP":  "ripple",
+	"XMR":  "monero",
+	"DASH": "dash",
+	"ZEC":  "zcash",
+	"GLM":  "golem",
+	"ARK":  "ark",
 }
 
 var yahooCurrencySymbolByTicker = map[string]string{
@@ -92,28 +100,25 @@ func (f *MarketFetcher) NewBondBatch(assets []OpenAsset, rubUSDRates map[string]
 	return assetBatchFetcher{fetcher: f, assets: assets, kind: "bond", rubUSDRates: rubUSDRates}
 }
 
-func (f currencyBatchFetcher) Fetch(ctx context.Context, fromISO string, toISO string, retry RetryConfig) (map[string]map[string]float64, []string, error) {
+func (f currencyBatchFetcher) Fetch(ctx context.Context, fromISO string, toISO string, retry RetryConfig) (map[string]map[string]float64, BatchOutcome, error) {
 	results := make(map[string]map[string]float64)
-	var errored []string
+	var outcome BatchOutcome
 	for _, ticker := range f.tickers {
-		data, hadErrors, err := f.fetcher.fetchTickerWithFallbacks(ctx, ticker, f.fetcher.currencySources(ticker, fromISO, toISO), retry)
+		data, sourceLog, err := f.fetcher.fetchTickerWithFallbacks(ctx, ticker, f.fetcher.currencySources(ticker, fromISO, toISO), retry)
 		if err != nil {
-			return nil, nil, err
+			return nil, BatchOutcome{}, err
 		}
+		recordTickerOutcome(&outcome, "currency", ticker, data, sourceLog)
 		if len(data) > 0 {
 			mergeTickerResults(results, ticker, data)
-			continue
-		}
-		if hadErrors {
-			errored = append(errored, ticker)
 		}
 	}
-	return results, errored, nil
+	return results, outcome, nil
 }
 
-func (f assetBatchFetcher) Fetch(ctx context.Context, fromISO string, toISO string, retry RetryConfig) (map[string]map[string]float64, []string, error) {
+func (f assetBatchFetcher) Fetch(ctx context.Context, fromISO string, toISO string, retry RetryConfig) (map[string]map[string]float64, BatchOutcome, error) {
 	results := make(map[string]map[string]float64)
-	var errored []string
+	var outcome BatchOutcome
 	for _, asset := range f.assets {
 		var sources []tickerSource
 		switch f.kind {
@@ -126,33 +131,55 @@ func (f assetBatchFetcher) Fetch(ctx context.Context, fromISO string, toISO stri
 		default:
 			continue
 		}
-		data, hadErrors, err := f.fetcher.fetchTickerWithFallbacks(ctx, asset.Ticker, sources, retry)
+		data, sourceLog, err := f.fetcher.fetchTickerWithFallbacks(ctx, asset.Ticker, sources, retry)
 		if err != nil {
-			return nil, nil, err
+			return nil, BatchOutcome{}, err
 		}
+		recordTickerOutcome(&outcome, f.kind, asset.Ticker, data, sourceLog)
 		if len(data) > 0 {
 			mergeTickerResults(results, asset.Ticker, data)
-			continue
-		}
-		if hadErrors {
-			errored = append(errored, asset.Ticker)
 		}
 	}
-	return results, errored, nil
+	return results, outcome, nil
 }
 
-func (f *MarketFetcher) fetchTickerWithFallbacks(ctx context.Context, label string, sources []tickerSource, retry RetryConfig) (map[string]float64, bool, error) {
-	hadErrors := false
+// recordTickerOutcome files a ticker under Degraded (got a price, but not from the first
+// source tried) or Failures (got no price at all) — a nil/empty sourceLog means the first
+// source succeeded outright, which is the healthy case and isn't recorded.
+func recordTickerOutcome(outcome *BatchOutcome, kind string, ticker string, data map[string]float64, sourceLog []string) {
+	if len(sourceLog) == 0 {
+		return
+	}
+	entry := TickerFailure{Kind: kind, Ticker: ticker, Sources: sourceLog}
+	if len(data) > 0 {
+		outcome.Degraded = append(outcome.Degraded, entry)
+	} else {
+		outcome.Failures = append(outcome.Failures, entry)
+	}
+}
+
+// fetchTickerWithFallbacks tries each source in order, retrying transient failures within a
+// source before moving to the next one. The returned []string is a per-source outcome log
+// ("coinGecko: http 429", "yahoo: ok", ...) in the order sources were tried. It's nil when
+// the very first source succeeded outright (the healthy, common case — nothing worth
+// logging); non-nil with a trailing "ok" when a later source recovered it (worth watching —
+// the earlier source is degraded); non-nil with no "ok" when every source failed.
+func (f *MarketFetcher) fetchTickerWithFallbacks(ctx context.Context, label string, sources []tickerSource, retry RetryConfig) (map[string]float64, []string, error) {
+	var sourceLog []string
 	for _, source := range sources {
+		outcome := "empty response"
 		for attempt := 1; attempt <= retry.Attempts; attempt++ {
 			data, err := source.fetch(ctx)
 			if err == nil {
 				if len(data) > 0 {
-					return data, hadErrors, nil
+					if len(sourceLog) == 0 {
+						return data, nil, nil
+					}
+					return data, append(sourceLog, source.name+": ok"), nil
 				}
 				break
 			}
-			hadErrors = true
+			outcome = describeFetchError(err)
 			status := httpStatusOf(err)
 			isTooManyRequests := status == http.StatusTooManyRequests
 			isTransient := status == 0 || status >= http.StatusInternalServerError || isTooManyRequests
@@ -160,11 +187,19 @@ func (f *MarketFetcher) fetchTickerWithFallbacks(ctx context.Context, label stri
 				break
 			}
 			if err := f.sleep(ctx, retry.Delay); err != nil {
-				return nil, true, fmt.Errorf("sleep after %s %s failure: %w", source.name, label, err)
+				return nil, nil, fmt.Errorf("sleep after %s %s failure: %w", source.name, label, err)
 			}
 		}
+		sourceLog = append(sourceLog, source.name+": "+outcome)
 	}
-	return nil, hadErrors, nil
+	return nil, sourceLog, nil
+}
+
+func describeFetchError(err error) string {
+	if status := httpStatusOf(err); status != 0 {
+		return fmt.Sprintf("http %d", status)
+	}
+	return "network error: " + err.Error()
 }
 
 func (f *MarketFetcher) currencySources(ticker string, fromISO string, toISO string) []tickerSource {
@@ -200,9 +235,6 @@ func (f *MarketFetcher) cryptoSources(ticker string, fromISO string, toISO strin
 	return []tickerSource{
 		{name: "coinGecko", fetch: func(ctx context.Context) (map[string]float64, error) {
 			return f.coinGeckoFetch(ctx, ticker, fromISO, toISO)
-		}},
-		{name: "cryptoCompare", fetch: func(ctx context.Context) (map[string]float64, error) {
-			return f.cryptoCompareFetch(ctx, ticker, fromISO, toISO)
 		}},
 		{name: "yahoo", fetch: func(ctx context.Context) (map[string]float64, error) {
 			return f.yahooFetch(ctx, ticker+"-USD", fromISO, toISO)
@@ -252,42 +284,6 @@ func (f *MarketFetcher) coinGeckoFetch(ctx context.Context, ticker string, fromI
 			continue
 		}
 		result[time.UnixMilli(int64(item[0])).UTC().Format("2006-01-02")] = item[1]
-	}
-	return result, nil
-}
-
-func (f *MarketFetcher) cryptoCompareFetch(ctx context.Context, ticker string, fromISO string, toISO string) (map[string]float64, error) {
-	symbol := cryptoCompareSymbolByTicker[ticker]
-	if symbol == "" {
-		symbol = ticker
-	}
-	days := int(parseISODate(toISO).Sub(parseISODate(fromISO)).Hours()/24) + 1
-	requestURL := fmt.Sprintf("https://min-api.cryptocompare.com/data/v2/histoday?fsym=%s&tsym=USD&limit=%d&toTs=%d", url.QueryEscape(symbol), days, toUnixSec(toISO, true))
-	var response struct {
-		Response string `json:"Response"`
-		Data     struct {
-			Data []struct {
-				Time  int64   `json:"time"`
-				Close float64 `json:"close"`
-			} `json:"Data"`
-		} `json:"Data"`
-	}
-	if err := f.getJSON(ctx, requestURL, nil, &response); err != nil {
-		return nil, err
-	}
-	if response.Response != "Success" {
-		return map[string]float64{}, nil
-	}
-	result := make(map[string]float64)
-	for _, item := range response.Data.Data {
-		if item.Close == 0 {
-			continue
-		}
-		dateISO := time.Unix(item.Time, 0).UTC().Format("2006-01-02")
-		if dateISO < fromISO || dateISO > toISO {
-			continue
-		}
-		result[dateISO] = item.Close
 	}
 	return result, nil
 }

@@ -35,7 +35,7 @@ func TestLegacyFixtureCriticalRoutesMatchRecordedParity(t *testing.T) {
 	server := httptest.NewServer(app.Handler)
 	defer server.Close()
 
-	token := legacyFixtureToken(t, cfg.JWTSecret)
+	token := legacyFixtureSession(t, app)
 
 	statsData := assertLegacyFixtureJSON(t, http.MethodGet, server.URL+"/api/food/stats", token)
 	statsDates := make([]string, 0, len(statsData))
@@ -64,7 +64,9 @@ func TestLegacyFixtureCriticalRoutesMatchRecordedParity(t *testing.T) {
 	assertLegacySliceLen(t, snapshotData, "assets", 53)
 	assertLegacySliceLen(t, snapshotData, "transactions", 3979)
 	assertLegacySliceLen(t, snapshotData, "rateHistory", 4180)
-	assertLegacySliceLen(t, snapshotData, "investAssetTrades", 196)
+	if _, exists := snapshotData["investAssetTrades"]; exists {
+		t.Fatal("snapshot must not carry investAssetTrades")
+	}
 
 	firstSnapshotRate := snapshotData["rateHistory"].([]any)[0].(map[string]any)
 	assertLegacyField(t, firstSnapshotRate, "dateISO", "2015-01-01")
@@ -101,26 +103,17 @@ func TestLegacyFixtureCriticalRoutesMatchRecordedParity(t *testing.T) {
 	assertLegacyField(t, lastRawRate, "dateISO", "2026-06-13")
 	assertLegacyField(t, lastRawRate, "ratesJson", "{\"RUB\":0.013807386370220238,\"BTC\":64437.99982792179,\"ETH\":1681.02612153385,\"DASH\":35.44206725104095,\"XMR\":339.82449126772894,\"ZEC\":421.9166351467492,\"ARK\":0.12128499895334244,\"GLM\":0.11100000143051147,\"XRP\":1.1500450372695923}")
 
-	tradesResponse := assertLegacyFixtureJSON(t, http.MethodGet, server.URL+"/api/money/trades", token)
-	trades := tradesResponse["data"].([]any)
-	if len(trades) != 196 {
-		t.Fatalf("trades len = %d, want 196", len(trades))
+	transactionsResponse := assertLegacyFixtureJSON(t, http.MethodGet, server.URL+"/api/money/transactions", token)
+	transactions := transactionsResponse["data"].([]any)
+	if len(transactions) != 3979 {
+		t.Fatalf("transactions len = %d, want 3979", len(transactions))
 	}
-	firstTrade := trades[0].(map[string]any)
-	lastTrade := trades[len(trades)-1].(map[string]any)
-	assertLegacyField(t, firstTrade, "dateISO", "2026-04-13")
-	assertLegacyField(t, firstTrade, "kind", "invest_sell")
-	assertLegacyField(t, firstTrade, "assetTicker", "TMOS")
-	assertLegacyField(t, lastTrade, "dateISO", "2017-01-12")
-	assertLegacyField(t, lastTrade, "kind", "invest_buy")
-	assertLegacyField(t, lastTrade, "assetTicker", "GAZP")
 }
 
 func TestLegacyFixtureProdLikeStartupWorks(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := legacyFixtureConfig(t, tempDir)
 	cfg.AppEnv = "prod"
-	cfg.JWTSecret = "prod-fixture-secret"
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -161,12 +154,12 @@ func TestLegacyFixtureCriticalRoutesHandleLowConcurrency(t *testing.T) {
 	server := httptest.NewServer(app.Handler)
 	defer server.Close()
 
-	token := legacyFixtureToken(t, cfg.JWTSecret)
+	token := legacyFixtureSession(t, app)
 	urls := []string{
 		server.URL + "/api/food/stats",
 		server.URL + "/api/money/snapshot",
 		server.URL + "/api/money/rate-history",
-		server.URL + "/api/money/trades",
+		server.URL + "/api/money/transactions",
 	}
 
 	errCh := make(chan error, len(urls)*3)
@@ -181,7 +174,7 @@ func TestLegacyFixtureCriticalRoutesHandleLowConcurrency(t *testing.T) {
 					errCh <- err
 					return
 				}
-				request.Header.Set("Authorization", "Bearer "+token)
+				request.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: token})
 				response, err := http.DefaultClient.Do(request)
 				if err != nil {
 					errCh <- err
@@ -248,11 +241,11 @@ func legacyFixtureConfig(t *testing.T, tempDir string) config.Config {
 		MigrationsDir:                       filepath.Join("..", "..", "migrations"),
 		PublicDir:                           filepath.Join(tempDir, "public"),
 		BackupsDir:                          filepath.Join(tempDir, "backups"),
-		JWTSecret:                           "legacy-fixture-secret",
 		FlatlineBaseURL:                     "http://127.0.0.1:1",
 		FlatlinePushTimeout:                 time.Second,
 		FlatlinePollInterval:                time.Hour,
 		FlatlinePollInitialLookback:         time.Minute,
+		FlatlinePollMaxCatchUp:              time.Hour,
 		OpenRouterTimeout:                   time.Minute,
 		OpenAIEmbeddingDims:                 768,
 		OpenAITimeout:                       time.Minute,
@@ -327,13 +320,14 @@ func copyLegacyFixtureDB(t *testing.T, from string, to string) {
 	}
 }
 
-func legacyFixtureToken(t *testing.T, secret string) string {
+func legacyFixtureSession(t *testing.T, app *App) string {
 	t.Helper()
-	tokens, err := auth.NewTokenManager(secret, time.Hour, 24*time.Hour).Issue(auth.TokenClaims{UserID: 1, Username: "vld1211"})
+	service := auth.NewService(auth.NewRepository(app.DB.Read(), app.DB.Write()), auth.SessionConfig{})
+	session, err := service.CreateSession(t.Context(), 1)
 	if err != nil {
-		t.Fatalf("Issue() error = %v", err)
+		t.Fatalf("CreateSession() error = %v", err)
 	}
-	return tokens.AccessToken
+	return session.Cookie
 }
 
 func assertLegacyFixtureJSON(t *testing.T, method string, url string, token string) map[string]any {
@@ -342,7 +336,7 @@ func assertLegacyFixtureJSON(t *testing.T, method string, url string, token stri
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
 	}
-	request.Header.Set("Authorization", "Bearer "+token)
+	request.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: token})
 
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {

@@ -62,15 +62,23 @@ func TestAppWebSocketUpgradeWorksThroughMiddleware(t *testing.T) {
 		t.Fatalf("login status = %d, want 200", loginResponse.StatusCode)
 	}
 
-	var tokens struct {
-		AccessToken string `json:"accessToken"`
+	var session struct {
+		Authenticated bool `json:"authenticated"`
 	}
-	if err := json.NewDecoder(loginResponse.Body).Decode(&tokens); err != nil {
+	if err := json.NewDecoder(loginResponse.Body).Decode(&session); err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
+	if !session.Authenticated {
+		t.Fatal("login response is not authenticated")
+	}
+	cookies := loginResponse.Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("session cookies = %d, want 1", len(cookies))
+	}
 
-	wsURL := "ws" + server.URL[len("http"):] + "/api/ws?token=" + tokens.AccessToken + "&clientId=tab-a"
-	conn, response, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	wsURL := "ws" + server.URL[len("http"):] + "/api/ws?clientId=tab-a"
+	headers := http.Header{"Cookie": {cookies[0].Name + "=" + cookies[0].Value}, "Origin": {server.URL}}
+	conn, response, err := websocket.DefaultDialer.Dial(wsURL, headers)
 	if err != nil {
 		statusCode := 0
 		if response != nil {
@@ -155,6 +163,53 @@ func TestAppRejectsOversizedRequestBody(t *testing.T) {
 	}
 }
 
+func TestAppServesTheConfiguredIngestSourcesOnly(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := appTestConfig(tempDir)
+	const key = "wiringwiringwiringwiring12345678"
+	cfg.IngestSources = []config.IngestSource{{Name: "ext", RotateBytes: 1_000_000}}
+	cfg.IngestKeys = []string{key}
+
+	prepareAppTestFiles(t, cfg)
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	app, err := NewApp(context.Background(), cfg, logger)
+	if err != nil {
+		t.Fatalf("NewApp() error = %v", err)
+	}
+	defer func() { _ = app.Shutdown(context.Background()) }()
+
+	server := httptest.NewServer(app.Handler)
+	defer server.Close()
+
+	post := func(path, withKey string) int {
+		request, err := http.NewRequest(http.MethodPost, server.URL+path, strings.NewReader(`{"events":[{"id":"a","stream":"s","at":1,"data":{}}]}`))
+		if err != nil {
+			t.Fatalf("NewRequest() error = %v", err)
+		}
+		request.Header.Set("X-Ingest-Key", withKey)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("Do() error = %v", err)
+		}
+		_ = response.Body.Close()
+		return response.StatusCode
+	}
+
+	if status := post("/api/ingest/ext", key); status != http.StatusOK {
+		t.Fatalf("configured source: status = %d, want 200", status)
+	}
+	if status := post("/api/ingest/ext", "wrong"); status != http.StatusUnauthorized {
+		t.Fatalf("wrong key: status = %d, want 401", status)
+	}
+	if status := post("/api/ingest/telemetry", key); status != http.StatusNotFound {
+		t.Fatalf("source that is not configured: status = %d, want 404", status)
+	}
+	if files, _ := filepath.Glob(filepath.Join(cfg.DataDir, "ingest", "ext", "ext-*.ndjson")); len(files) != 1 {
+		t.Fatalf("stored files = %v, want one under the source's own directory", files)
+	}
+}
+
 func appTestConfig(tempDir string) config.Config {
 	return config.Config{
 		AppEnv:                              "test",
@@ -167,11 +222,11 @@ func appTestConfig(tempDir string) config.Config {
 		MigrationsDir:                       filepath.Join(tempDir, "migrations"),
 		PublicDir:                           filepath.Join(tempDir, "public"),
 		BackupsDir:                          filepath.Join(tempDir, "backups"),
-		JWTSecret:                           "test-secret",
 		FlatlineBaseURL:                     "http://127.0.0.1:1",
 		FlatlinePushTimeout:                 time.Second,
 		FlatlinePollInterval:                time.Hour,
 		FlatlinePollInitialLookback:         time.Minute,
+		FlatlinePollMaxCatchUp:              time.Hour,
 		OpenRouterTimeout:                   time.Minute,
 		OpenAITimeout:                       time.Minute,
 		PersonalKcalJobSchedule:             "0 2 1 * *",
@@ -219,14 +274,25 @@ func prepareAppTestFiles(t *testing.T, cfg config.Config) {
 			hashedPassword TEXT,
 			isAdmin BOOLEAN
 		);
-		CREATE TABLE IF NOT EXISTS settings (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			usersId INTEGER,
-			darkTheme BOOLEAN,
-			selectedChapterFood BOOLEAN,
-			selectedChapterMoney BOOLEAN,
-			liteVersion BOOLEAN,
-			height INTEGER
+		CREATE TABLE IF NOT EXISTS userSettings (
+			usersId INTEGER NOT NULL,
+			namespace TEXT NOT NULL,
+			payload TEXT NOT NULL,
+			updatedAt TEXT NOT NULL,
+			PRIMARY KEY (usersId, namespace)
+		);
+	`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.MigrationsDir, "000008_server_sessions.sql"), []byte(`
+		CREATE TABLE auth_sessions (
+			id TEXT PRIMARY KEY,
+			secretHash BLOB NOT NULL,
+			userId INTEGER NOT NULL,
+			createdAt TEXT NOT NULL,
+			expiresAt TEXT NOT NULL,
+			renewedAt TEXT NOT NULL,
+			revokedAt TEXT
 		);
 	`), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)

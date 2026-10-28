@@ -10,11 +10,18 @@ import (
 
 const MainServiceName = "megaapp"
 
+const (
+	GranularityMinute = "minute"
+	GranularityHour   = "hour"
+	GranularityDay    = "day"
+)
+
 type MetricPoint struct {
-	Service string  `json:"service"`
-	Name    string  `json:"name"`
-	Bucket  int64   `json:"bucket"`
-	Value   float64 `json:"value"`
+	Service     string  `json:"service"`
+	Name        string  `json:"name"`
+	Granularity string  `json:"granularity"`
+	Bucket      int64   `json:"bucket"`
+	Value       float64 `json:"value"`
 }
 
 type AdminLister interface {
@@ -60,7 +67,7 @@ func (s *Service) Flush() []MetricPoint {
 	bucket := previousMinuteBucket(s.clock.Now())
 	points := make([]MetricPoint, 0, len(pending))
 	for name, delta := range pending {
-		points = append(points, MetricPoint{Service: s.serviceName, Name: name, Bucket: bucket, Value: float64(delta)})
+		points = append(points, MetricPoint{Service: s.serviceName, Name: name, Granularity: GranularityMinute, Bucket: bucket, Value: float64(delta)})
 	}
 	return points
 }

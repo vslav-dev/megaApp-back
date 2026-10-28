@@ -2,10 +2,11 @@ package food
 
 import (
 	"context"
-	"encoding/binary"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"math"
-	"sort"
+	"log/slog"
+	"slices"
 	"strings"
 
 	"megaapp-back/internal/httpx/legacy"
@@ -22,18 +23,8 @@ type ProductPreviewData struct {
 	Confidence      float64 `json:"confidence"`
 }
 
-type VoiceAnalysisData struct {
-	DetectedProduct ProductPreviewData `json:"detectedProduct"`
-	SearchResults   []CatalogueEntry   `json:"searchResults"`
-}
-
-type scoredCatalogueEntry struct {
-	entry CatalogueEntry
-	score int
-}
-
 func (s *Service) SearchCatalogue(ctx context.Context, query string) ([]CatalogueEntry, error) {
-	ids, err := s.searchCatalogueIDs(ctx, query)
+	ids, err := s.searchCatalogueIDs(ctx, query, SearchScopeActive)
 	if err != nil {
 		return nil, err
 	}
@@ -58,8 +49,37 @@ func (s *Service) SearchCatalogue(ctx context.Context, query string) ([]Catalogu
 	return result, nil
 }
 
-func (s *Service) SearchCatalogueRealtime(ctx context.Context, query string) ([]int64, error) {
-	return s.searchCatalogueIDs(ctx, query)
+// SearchCatalogueRealtime serves the WS search. The archived scope is applied only for an admin, and
+// an unknown scope is the active one: anything else silently falls back to the active scope. The scope
+// "all" is open to everybody, since the whole catalogue, archived products included, is already on every
+// client. The returned scope is the one actually applied, so the client never mistakes the results of
+// one scope for another's.
+func (s *Service) SearchCatalogueRealtime(ctx context.Context, userID int64, query string, scope SearchScope) ([]int64, SearchScope, error) {
+	switch scope {
+	case SearchScopeAll:
+	case SearchScopeArchived:
+		isAdmin, err := s.isAdmin(ctx, userID)
+		if err != nil {
+			return nil, "", err
+		}
+		if !isAdmin {
+			scope = SearchScopeActive
+		}
+	default:
+		scope = SearchScopeActive
+	}
+	ids, err := s.searchCatalogueIDs(ctx, query, scope)
+	if err != nil {
+		return nil, "", err
+	}
+	return ids, scope, nil
+}
+
+func (s *Service) isAdmin(ctx context.Context, userID int64) (bool, error) {
+	if s.adminChecker == nil {
+		return false, nil
+	}
+	return s.adminChecker.IsAdmin(ctx, userID)
 }
 
 func (s *Service) GenerateProductPreview(ctx context.Context, query string) (ProductPreviewData, error) {
@@ -77,274 +97,348 @@ func (s *Service) GenerateProductPreview(ctx context.Context, query string) (Pro
 	return preview, nil
 }
 
-func (s *Service) SaveProduct(ctx context.Context, catalogueID *int64, input ProductInput) (*CatalogueEntry, error) {
-	input = normalizeProductInput(input)
-	if err := validateProductInput(input); err != nil {
-		return nil, legacy.WrapError(legacy.ErrorKindValidation, err.Error(), err)
-	}
-
-	existingByName, err := s.repo.GetCatalogueEntryByName(ctx, input.Name)
+// peekIdempotency reports whether operationID has already been applied, without holding a
+// transaction open across it. Checked first and unconditionally in SaveProduct/DeleteProduct —
+// on a replay, nothing else (name lookup, embeddings generation, usage check) should run at all.
+// Mirrors internal/money/service.go's helper of the same name and reasoning.
+func (s *Service) peekIdempotency(ctx context.Context, userID int64, operationID string) (string, bool, error) {
+	tx, err := s.idempotency.BeginTx(ctx)
 	if err != nil {
-		return nil, legacy.WrapError(legacy.ErrorKindInternal, "Failed to look up product by name", err)
+		return "", false, err
 	}
-
-	nameVector, descriptionVector, err := s.generateProductEmbeddings(ctx, input)
-	if err != nil {
-		return nil, legacy.WrapError(legacy.ErrorKindExternal, "Failed to generate product embeddings", err)
-	}
-	input.NameVector = nameVector
-	input.DescriptionVec = descriptionVector
-
-	if catalogueID == nil {
-		if existingByName != nil {
-			return nil, legacy.NewError(legacy.ErrorKindValidation, "product with this name already exists")
-		}
-		id, err := s.repo.CreateCatalogueEntry(ctx, input)
-		if err != nil {
-			return nil, legacy.WrapError(legacy.ErrorKindInternal, "Failed to create product", err)
-		}
-		s.searchCache.Clear()
-		entry, err := s.GetCatalogueEntry(ctx, id)
-		if err != nil {
-			return nil, legacy.WrapError(legacy.ErrorKindInternal, "Failed to load created product", err)
-		}
-		if entry != nil && s.imageGenerationRequest != nil {
-			s.imageGenerationRequest.RequestProductImageGeneration(entry.ID, entry.Name, entry.Description)
-		}
-		return entry, nil
-	}
-
-	existingByID, err := s.repo.GetCatalogueEntry(ctx, *catalogueID)
-	if err != nil {
-		return nil, legacy.WrapError(legacy.ErrorKindInternal, "Failed to load product", err)
-	}
-	if existingByID == nil {
-		return nil, legacy.NewError(legacy.ErrorKindNotFound, "product not found")
-	}
-	if existingByName != nil && existingByName.ID != *catalogueID {
-		return nil, legacy.NewError(legacy.ErrorKindValidation, "product with this name already exists")
-	}
-
-	updated, err := s.repo.UpdateCatalogueEntry(ctx, *catalogueID, input)
-	if err != nil {
-		return nil, legacy.WrapError(legacy.ErrorKindInternal, "Failed to update product", err)
-	}
-	if !updated {
-		return nil, legacy.NewError(legacy.ErrorKindNotFound, "product not found")
-	}
-
-	s.searchCache.Clear()
-	entry, err := s.GetCatalogueEntry(ctx, *catalogueID)
-	if err != nil {
-		return nil, legacy.WrapError(legacy.ErrorKindInternal, "Failed to load updated product", err)
-	}
-	return entry, nil
+	cachedJSON, found, err := s.idempotency.Find(ctx, tx, userID, operationID)
+	_ = tx.Rollback()
+	return cachedJSON, found, err
 }
 
-func (s *Service) DeleteProduct(ctx context.Context, catalogueID int64) (bool, error) {
+func (s *Service) SaveProduct(ctx context.Context, userID int64, operationID string, catalogueID *int64, input ProductInput) (entry *CatalogueEntry, applied bool, err error) {
+	// Only an admin may touch the archive flag. Checked before the idempotency peek so that a
+	// replayed operation cannot bypass it, and for any value of the flag (even an unchanged one).
+	if input.Archived != nil {
+		isAdmin, err := s.isAdmin(ctx, userID)
+		if err != nil {
+			return nil, false, legacy.WrapError(legacy.ErrorKindInternal, "Failed to check permissions", err)
+		}
+		if !isAdmin {
+			return nil, false, legacy.NewError(legacy.ErrorKindForbidden, "Forbidden")
+		}
+	}
+
+	cachedJSON, found, err := s.peekIdempotency(ctx, userID, operationID)
+	if err != nil {
+		return nil, false, err
+	}
+	var resultID int64
+	if found {
+		var cached struct {
+			ID int64 `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(cachedJSON), &cached); err != nil {
+			return nil, false, fmt.Errorf("decode cached catalogue save: %w", err)
+		}
+		resultID = cached.ID
+	} else {
+		input = normalizeProductInput(input)
+		if err := validateProductInput(input); err != nil {
+			return nil, false, legacy.WrapError(legacy.ErrorKindValidation, err.Error(), err)
+		}
+
+		existingByName, err := s.repo.GetCatalogueEntryByName(ctx, input.Name)
+		if err != nil {
+			return nil, false, legacy.WrapError(legacy.ErrorKindInternal, "Failed to look up product by name", err)
+		}
+
+		// All reads happen before the write transaction opens, so it only holds the writes.
+		if catalogueID == nil {
+			if existingByName != nil {
+				return nil, false, legacy.NewError(legacy.ErrorKindValidation, "product with this name already exists")
+			}
+		} else {
+			existingByID, err := s.repo.GetCatalogueEntry(ctx, *catalogueID)
+			if err != nil {
+				return nil, false, legacy.WrapError(legacy.ErrorKindInternal, "Failed to load product", err)
+			}
+			if existingByID == nil {
+				return nil, false, legacy.NewError(legacy.ErrorKindNotFound, "product not found")
+			}
+			if existingByName != nil && existingByName.ID != *catalogueID {
+				return nil, false, legacy.NewError(legacy.ErrorKindValidation, "product with this name already exists")
+			}
+		}
+
+		nameVector, descriptionVector, err := s.generateProductEmbeddings(ctx, input)
+		if err != nil {
+			return nil, false, legacy.WrapError(legacy.ErrorKindExternal, "Failed to generate product embeddings", err)
+		}
+		input.NameVector = nameVector
+		input.DescriptionVec = descriptionVector
+
+		tx, err := s.idempotency.BeginTx(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+
+		if catalogueID == nil {
+			resultID, err = s.repo.CreateCatalogueEntry(ctx, tx, input)
+			if err != nil {
+				_ = tx.Rollback()
+				return nil, false, legacy.WrapError(legacy.ErrorKindInternal, "Failed to create product", err)
+			}
+		} else {
+			updated, err := s.repo.UpdateCatalogueEntry(ctx, tx, *catalogueID, input)
+			if err != nil {
+				_ = tx.Rollback()
+				return nil, false, legacy.WrapError(legacy.ErrorKindInternal, "Failed to update product", err)
+			}
+			if !updated {
+				_ = tx.Rollback()
+				return nil, false, legacy.NewError(legacy.ErrorKindNotFound, "product not found")
+			}
+			resultID = *catalogueID
+		}
+
+		payload, err := json.Marshal(struct {
+			ID int64 `json:"id"`
+		}{resultID})
+		if err != nil {
+			_ = tx.Rollback()
+			return nil, false, err
+		}
+		if err := s.idempotency.Record(ctx, tx, userID, operationID, string(payload)); err != nil {
+			_ = tx.Rollback()
+			return nil, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, false, fmt.Errorf("commit catalogue save: %w", err)
+		}
+		s.catalogueChanged()
+		applied = true
+	}
+
+	entry, err = s.GetCatalogueEntry(ctx, resultID)
+	if err != nil {
+		return nil, false, legacy.WrapError(legacy.ErrorKindInternal, "Failed to load saved product", err)
+	}
+	if applied && entry != nil && catalogueID == nil && s.imageGenerationRequest != nil {
+		s.imageGenerationRequest.RequestProductImageGeneration(entry.ID, entry.Name, entry.Description, false)
+	}
+	return entry, applied, nil
+}
+
+// RegenerateProductImage queues a new image for the product, replacing the current one once the
+// new one is ready. Admin only: generation costs money. The permission check goes first, ahead of
+// any lookup, as for the archive flag. Nothing is refused silently: every outcome that does not
+// queue the work is an error.
+func (s *Service) RegenerateProductImage(ctx context.Context, userID int64, catalogueID int64) (ImageRequestOutcome, error) {
+	isAdmin, err := s.isAdmin(ctx, userID)
+	if err != nil {
+		return "", legacy.WrapError(legacy.ErrorKindInternal, "Failed to check permissions", err)
+	}
+	if !isAdmin {
+		return "", legacy.NewError(legacy.ErrorKindForbidden, "Forbidden")
+	}
+
 	entry, err := s.repo.GetCatalogueEntry(ctx, catalogueID)
 	if err != nil {
-		return false, legacy.WrapError(legacy.ErrorKindInternal, "Failed to load product", err)
+		return "", legacy.WrapError(legacy.ErrorKindInternal, "Failed to load product", err)
 	}
 	if entry == nil {
-		return false, legacy.NewError(legacy.ErrorKindNotFound, "product not found")
+		return "", legacy.NewError(legacy.ErrorKindNotFound, "product not found")
+	}
+
+	if s.imageGenerationRequest == nil {
+		return "", legacy.NewError(legacy.ErrorKindConflict, "Image generation is disabled")
+	}
+	outcome := s.imageGenerationRequest.RequestProductImageGeneration(entry.ID, entry.Name, nullableStringValue(entry.Description), true)
+	switch outcome {
+	case ImageRequestQueued, ImageRequestAlreadyQueued:
+		return outcome, nil
+	case ImageRequestQueueFull:
+		return "", legacy.NewError(legacy.ErrorKindTooManyRequests, "Image generation queue is full")
+	default:
+		return "", legacy.NewError(legacy.ErrorKindConflict, "Image generation is disabled")
+	}
+}
+
+// BumpCatalogueVersion tells reconnecting clients the catalogue changed without dropping the
+// cached entries or the search index: used when an image becomes ready, which neither holds.
+func (s *Service) BumpCatalogueVersion() {
+	s.catalogueCache.BumpVersion()
+}
+
+// LogProductsWithoutImage writes one warning listing the non-archived products that have no
+// image, so a silently failed generation of the past does not stay unnoticed. It never generates.
+func (s *Service) LogProductsWithoutImage(ctx context.Context, logger *slog.Logger) {
+	catalogue, err := s.GetCatalogue(ctx)
+	if err != nil {
+		logger.Warn("products without image check failed", "error", err)
+		return
+	}
+	ids := make([]int64, 0)
+	for id, entry := range catalogue {
+		if entry.ImageVersion == nil && !entry.Archived {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	slices.Sort(ids)
+	logger.Warn("products without image", "count", len(ids), "catalogueIds", ids)
+}
+
+func (s *Service) DeleteProduct(ctx context.Context, userID int64, operationID string, catalogueID int64) (deleted bool, applied bool, err error) {
+	cachedJSON, found, err := s.peekIdempotency(ctx, userID, operationID)
+	if err != nil {
+		return false, false, err
+	}
+	if found {
+		var cached struct {
+			Deleted bool `json:"deleted"`
+		}
+		if err := json.Unmarshal([]byte(cachedJSON), &cached); err != nil {
+			return false, false, fmt.Errorf("decode cached catalogue delete: %w", err)
+		}
+		return cached.Deleted, false, nil
+	}
+
+	entry, err := s.repo.GetCatalogueEntry(ctx, catalogueID)
+	if err != nil {
+		return false, false, legacy.WrapError(legacy.ErrorKindInternal, "Failed to load product", err)
+	}
+	if entry == nil {
+		return false, false, legacy.NewError(legacy.ErrorKindNotFound, "product not found")
 	}
 
 	count, err := s.repo.CountDiaryEntriesByCatalogueID(ctx, catalogueID)
 	if err != nil {
-		return false, legacy.WrapError(legacy.ErrorKindInternal, "Failed to check product usage", err)
+		return false, false, legacy.WrapError(legacy.ErrorKindInternal, "Failed to check product usage", err)
 	}
 	if count > 0 {
-		return false, legacy.NewError(legacy.ErrorKindConflict, "product is used in diary entries")
+		return false, false, legacy.NewError(legacy.ErrorKindConflict, "product is used in diary entries")
 	}
 
-	deleted, err := s.repo.DeleteCatalogueEntry(ctx, catalogueID)
+	tx, err := s.idempotency.BeginTx(ctx)
 	if err != nil {
-		return false, legacy.WrapError(legacy.ErrorKindInternal, "Failed to delete product", err)
+		return false, false, err
 	}
+
+	deleted, err = s.repo.DeleteCatalogueEntry(ctx, tx, catalogueID)
+	if err != nil {
+		_ = tx.Rollback()
+		return false, false, legacy.WrapError(legacy.ErrorKindInternal, "Failed to delete product", err)
+	}
+
+	payload, err := json.Marshal(struct {
+		Deleted bool `json:"deleted"`
+	}{deleted})
+	if err != nil {
+		_ = tx.Rollback()
+		return false, false, err
+	}
+	if err := s.idempotency.Record(ctx, tx, userID, operationID, string(payload)); err != nil {
+		_ = tx.Rollback()
+		return false, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, false, fmt.Errorf("commit catalogue delete: %w", err)
+	}
+
 	if deleted {
-		s.searchCache.Clear()
+		s.catalogueChanged()
 	}
-	return deleted, nil
+	return deleted, true, nil
 }
 
-func (s *Service) AnalyzeVoiceTranscript(ctx context.Context, transcript string) (*VoiceAnalysisData, error) {
-	if strings.TrimSpace(transcript) == "" {
-		return nil, legacy.NewError(legacy.ErrorKindValidation, "Transcript is required")
-	}
-	if s.productGenerator == nil {
-		return nil, legacy.NewError(legacy.ErrorKindInternal, "Product generator is not configured")
-	}
-	preview, err := s.productGenerator.AnalyzeVoice(ctx, transcript)
-	if err != nil {
-		return nil, legacy.WrapError(legacy.ErrorKindExternal, "Failed to analyze voice transcript", err)
-	}
-	results, err := s.SearchCatalogue(ctx, preview.GeneralizedName)
-	if err != nil {
-		return nil, legacy.WrapError(legacy.ErrorKindInternal, "Failed to search catalogue", err)
-	}
-	return &VoiceAnalysisData{DetectedProduct: preview, SearchResults: results}, nil
+// catalogueChanged is the one place every catalogue write reports to: it drops the cached catalogue
+// and the search index, so the next read of either starts from the database.
+func (s *Service) catalogueChanged() {
+	s.catalogueCache.Invalidate()
+	s.searchIndex.Invalidate()
 }
 
-func (s *Service) searchCatalogueIDs(ctx context.Context, query string) ([]int64, error) {
+// searchCatalogueIDs ranks the products of one scope. The results cache serves the active scope
+// only — searches of the other scopes are rare, so they neither read nor write it.
+func (s *Service) searchCatalogueIDs(ctx context.Context, query string, scope SearchScope) ([]int64, error) {
 	normalizedQuery := normalizeSearchText(query)
 	if normalizedQuery == "" {
 		return []int64{}, nil
 	}
-	if cached, ok := s.searchCache.Get(normalizedQuery); ok {
-		return cached, nil
-	}
 
-	semanticIDs, err := s.searchCatalogueIDsByEmbedding(ctx, normalizedQuery)
+	index, err := s.searchIndex.Get(ctx, s.buildSearchIndex)
 	if err != nil {
 		return nil, err
 	}
-	if len(semanticIDs) > 0 {
-		s.searchCache.Set(normalizedQuery, semanticIDs)
-		return semanticIDs, nil
+	cacheable := scope == SearchScopeActive
+	if cacheable {
+		if cached, ok := index.results.Get(normalizedQuery); ok {
+			return cached, nil
+		}
 	}
 
-	catalogue, err := s.GetCatalogue(ctx)
-	if err != nil {
+	// A vector that cannot be obtained (OpenAI down) is not an error for the user: the products whose
+	// name starts with a query word are still found. A result built without the vector is not cached,
+	// so the next search of the query tries the vector again. A database failure is an error.
+	queryVector, err := s.queryVector(ctx, normalizedQuery)
+	switch {
+	case errors.Is(err, errQueryVectorUnavailable):
+		slog.WarnContext(ctx, "food search: query vector unavailable, ranking by name only", "query", normalizedQuery, "error", err)
+	case err != nil:
 		return nil, err
 	}
 
-	normalizedTokens := splitSearchTokens(normalizedQuery)
-	transliteratedQuery := transliterateEnToRu(normalizedQuery)
-	transliteratedTokens := splitSearchTokens(transliteratedQuery)
-	scored := make([]scoredCatalogueEntry, 0, len(catalogue))
-	for _, entry := range catalogue {
-		score := scoreCatalogueEntry(entry, normalizedQuery, normalizedTokens, transliteratedQuery, transliteratedTokens)
-		if score == 0 {
-			continue
-		}
-		scored = append(scored, scoredCatalogueEntry{entry: entry, score: score})
+	ids := index.search(searchWords(normalizedQuery), queryVector, scope, searchWordLift)
+	if cacheable && queryVector != nil {
+		index.results.Set(normalizedQuery, ids)
 	}
-
-	sort.Slice(scored, func(i int, j int) bool {
-		if scored[i].score == scored[j].score {
-			return scored[i].entry.Name < scored[j].entry.Name
-		}
-		return scored[i].score > scored[j].score
-	})
-
-	limit := 30
-	if len(scored) > limit {
-		scored = scored[:limit]
-	}
-	ids := make([]int64, 0, len(scored))
-	for _, item := range scored {
-		ids = append(ids, item.entry.ID)
-	}
-
-	s.searchCache.Set(normalizedQuery, ids)
 	return ids, nil
 }
 
-func (s *Service) searchCatalogueIDsByEmbedding(ctx context.Context, query string) ([]int64, error) {
+// errQueryVectorUnavailable marks a query vector that could not be produced by the embedding generator.
+var errQueryVectorUnavailable = errors.New("query vector unavailable")
+
+func (s *Service) buildSearchIndex(ctx context.Context) (*searchIndex, error) {
+	rows, err := s.repo.GetSearchIndexRows(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return newSearchIndex(rows), nil
+}
+
+// queryVector returns the unit embedding of the query: from the cache table, or from the embedding
+// generator when the query is new or its cached vector is unusable (malformed or all zeros — the
+// fresh vector then replaces the bad row). It is nil, without an error, only when no generator is
+// configured; a generator failure or an unusable generated vector is errQueryVectorUnavailable; a
+// failed database read is returned as it is.
+func (s *Service) queryVector(ctx context.Context, query string) ([]float32, error) {
 	embeddingBlob, err := s.repo.GetQueryEmbedding(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-	if len(embeddingBlob) == 0 {
-		if s.embeddingGenerator == nil {
-			return nil, nil
-		}
-		embedding, err := s.embeddingGenerator.GenerateEmbedding(ctx, query)
-		if err != nil {
-			return nil, err
-		}
-		embeddingBlob = encodeFloat32Blob(embedding)
-		if err := s.repo.SaveQueryEmbedding(ctx, query, embeddingBlob); err != nil {
-			return nil, err
-		}
-	}
-	queryVector := decodeFloat32Blob(embeddingBlob)
-	if len(queryVector) == 0 {
-		return nil, nil
+	if vector := decodeUnitVector(embeddingBlob); vector != nil {
+		// Best-effort popularity counter — losing an increment on failure isn't worth failing
+		// the search itself over.
+		_ = s.repo.RecordQueryEmbeddingHit(ctx, query)
+		return vector, nil
 	}
 
-	rows, err := s.repo.GetSearchVectors(ctx)
+	if s.embeddingGenerator == nil {
+		return nil, nil
+	}
+	embedding, err := s.embeddingGenerator.GenerateEmbedding(ctx, query)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errQueryVectorUnavailable, err)
 	}
-	type scoredVector struct {
-		id       int64
-		distance float64
+	embeddingBlob = encodeFloat32Blob(embedding)
+	vector := decodeUnitVector(embeddingBlob)
+	if vector == nil {
+		return nil, fmt.Errorf("%w: the embedding generator returned an empty or zero vector", errQueryVectorUnavailable)
 	}
-	results := make([]scoredVector, 0, len(rows))
-	for _, row := range rows {
-		nameVector := decodeFloat32Blob(row.NameVector)
-		descriptionVector := decodeFloat32Blob(row.DescriptionVec)
-		distance, ok := combinedDistance(queryVector, nameVector, descriptionVector)
-		if !ok {
-			continue
-		}
-		results = append(results, scoredVector{id: row.ID, distance: distance})
+	// The vector is already in hand, so a failed cache write only costs a repeated embedding later.
+	if err := s.repo.SaveQueryEmbedding(ctx, query, embeddingBlob); err != nil {
+		slog.WarnContext(ctx, "food search: query vector was not cached", "query", query, "error", err)
 	}
-	if len(results) == 0 {
-		return nil, nil
-	}
-
-	sort.Slice(results, func(i int, j int) bool {
-		if results[i].distance == results[j].distance {
-			return results[i].id < results[j].id
-		}
-		return results[i].distance < results[j].distance
-	})
-
-	limit := 30
-	if len(results) > limit {
-		results = results[:limit]
-	}
-	ids := make([]int64, 0, len(results))
-	for _, item := range results {
-		ids = append(ids, item.id)
-	}
-	return ids, nil
-}
-
-func scoreCatalogueEntry(entry CatalogueEntry, query string, tokens []string, transliteratedQuery string, transliteratedTokens []string) int {
-	name := normalizeSearchText(entry.Name)
-	legacy := normalizeSearchText(nullableStringOrEmpty(entry.LegacyName))
-	description := normalizeSearchText(entry.Description)
-
-	score := 0
-	score += scoreField(name, query, tokens, 1000, 500, 80, 140)
-	score += scoreField(legacy, query, transliteratedTokens, 850, 420, 70, 120)
-	score += scoreField(description, query, tokens, 120, 80, 20, 40)
-	if transliteratedQuery != query {
-		score += scoreField(name, transliteratedQuery, transliteratedTokens, 700, 300, 60, 100)
-		score += scoreField(legacy, query, tokens, 700, 300, 60, 100)
-	}
-	return score
-}
-
-func scoreField(field string, query string, tokens []string, exact int, prefix int, tokenScore int, allTokens int) int {
-	if field == "" || query == "" {
-		return 0
-	}
-	if field == query {
-		return exact
-	}
-	score := 0
-	if strings.HasPrefix(field, query) {
-		score += prefix
-	}
-	matched := 0
-	for _, token := range tokens {
-		if token == "" {
-			continue
-		}
-		if strings.Contains(field, token) {
-			score += tokenScore
-			matched++
-		}
-	}
-	if matched > 0 && matched == len(tokens) {
-		score += allTokens
-	}
-	return score
+	return vector, nil
 }
 
 func (s *Service) generateProductEmbeddings(ctx context.Context, input ProductInput) ([]byte, []byte, error) {
@@ -397,80 +491,4 @@ func utfLen(value string) int {
 func normalizeSearchText(value string) string {
 	fields := strings.Fields(strings.ToLower(strings.TrimSpace(value)))
 	return strings.Join(fields, " ")
-}
-
-func splitSearchTokens(value string) []string {
-	if value == "" {
-		return nil
-	}
-	return strings.Fields(value)
-}
-
-func nullableStringOrEmpty(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
-}
-
-var enToRuTransliterationRules = map[rune]rune{
-	'q': 'й', 'w': 'ц', 'e': 'у', 'r': 'к', 't': 'е', 'y': 'н', 'u': 'г', 'i': 'ш', 'o': 'щ', 'p': 'з', '[': 'х', ']': 'ъ',
-	'a': 'ф', 's': 'ы', 'd': 'в', 'f': 'а', 'g': 'п', 'h': 'р', 'j': 'о', 'k': 'л', 'l': 'д', ';': 'ж', '\'': 'э',
-	'z': 'я', 'x': 'ч', 'c': 'с', 'v': 'м', 'b': 'и', 'n': 'т', 'm': 'ь', ',': 'б', '.': 'ю',
-}
-
-func transliterateEnToRu(text string) string {
-	runes := []rune(strings.ToLower(text))
-	for idx, r := range runes {
-		if mapped, ok := enToRuTransliterationRules[r]; ok {
-			runes[idx] = mapped
-		}
-	}
-	return string(runes)
-}
-
-func decodeFloat32Blob(blob []byte) []float64 {
-	if len(blob) == 0 || len(blob)%4 != 0 {
-		return nil
-	}
-	result := make([]float64, 0, len(blob)/4)
-	for idx := 0; idx < len(blob); idx += 4 {
-		bits := binary.LittleEndian.Uint32(blob[idx : idx+4])
-		result = append(result, float64(math.Float32frombits(bits)))
-	}
-	return result
-}
-
-func combinedDistance(query []float64, nameVector []float64, descriptionVector []float64) (float64, bool) {
-	hasName := len(nameVector) == len(query) && len(nameVector) > 0
-	hasDescription := len(descriptionVector) == len(query) && len(descriptionVector) > 0
-	if !hasName && !hasDescription {
-		return 0, false
-	}
-	if hasName && hasDescription {
-		return cosineDistance(query, nameVector)*0.5 + cosineDistance(query, descriptionVector)*0.5, true
-	}
-	if hasName {
-		return cosineDistance(query, nameVector), true
-	}
-	return cosineDistance(query, descriptionVector), true
-}
-
-func cosineDistance(a []float64, b []float64) float64 {
-	if len(a) == 0 || len(a) != len(b) {
-		return 1
-	}
-	dot := 0.0
-	normA := 0.0
-	normB := 0.0
-	for idx := range a {
-		dot += a[idx] * b[idx]
-		normA += a[idx] * a[idx]
-		normB += b[idx] * b[idx]
-	}
-	normProduct := math.Sqrt(normA) * math.Sqrt(normB)
-	if normProduct == 0 {
-		return 1
-	}
-	return 1 - dot/normProduct
 }
