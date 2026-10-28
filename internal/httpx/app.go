@@ -152,6 +152,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger, clk clo
 	})
 	metrics.RegisterRoutes(router, authModule.service, metricsModule.historyHandler)
 	ws.RegisterRoutes(router, wsModule.handler)
+	registerSwagger(router)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddress(),

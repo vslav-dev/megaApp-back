@@ -1,0 +1,952 @@
+openapi: 3.0.3
+info:
+  title: MegaApp API
+  description: |
+    Hand-written spec, served on the test build only (`-tags swagger`). Keep it in sync with the routes:
+    `TestOpenAPISpecMatchesRoutes` fails when a public route is missing here or documented here but gone.
+
+    Auth is the `megaapp_session` cookie. Call `POST /api/auth/login` from this page: the cookie is set
+    for the same origin and every other request sent from "Try it out" carries it.
+    Unsafe methods are rejected with 403 when the `Origin` header is not the same origin.
+
+    Left out on purpose: `/api/ws` (WebSocket), `/api/ingest/{source}` (key-based extension ingest) and
+    the server-only `/api/debug/*` and `/api/lab/*` routes (reachable only from the server itself).
+  version: 1.0.0
+servers:
+  - url: /
+security:
+  - session: []
+tags:
+  - name: ops
+  - name: auth
+  - name: settings
+  - name: food
+  - name: money
+  - name: metrics
+paths:
+  /health:
+    get:
+      tags: [ops]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200': { $ref: '#/components/responses/Status' }
+  /readiness:
+    get:
+      tags: [ops]
+      summary: Readiness probe, pings the database
+      security: []
+      responses:
+        '200': { $ref: '#/components/responses/Status' }
+        '503': { $ref: '#/components/responses/Status' }
+  /build-info:
+    get:
+      tags: [ops]
+      summary: Commit, build time, Go version and APP_ENV of the running binary
+      security: []
+      responses:
+        '200':
+          description: Build info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  commit: { type: string }
+                  buildTime: { type: string }
+                  goVersion: { type: string }
+                  appEnv: { type: string }
+  /api/debug/commit-info:
+    get:
+      tags: [ops]
+      summary: Commit hash and date shown in the frontend console
+      security: []
+      responses:
+        '200':
+          description: Commit info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  commitHash: { type: string }
+                  commitDateTime: { type: string }
+
+  /api/auth/register:
+    post:
+      tags: [auth]
+      summary: Create a user
+      security: []
+      requestBody: { $ref: '#/components/requestBodies/Credentials' }
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '400': { $ref: '#/components/responses/Detail' }
+        '403': { $ref: '#/components/responses/Detail' }
+  /api/auth/login:
+    post:
+      tags: [auth]
+      summary: Log in, sets the session cookie
+      security: []
+      requestBody: { $ref: '#/components/requestBodies/Credentials' }
+      responses:
+        '200':
+          description: Session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: '#/components/responses/Detail' }
+        '403': { $ref: '#/components/responses/Detail' }
+  /api/auth/session:
+    get:
+      tags: [auth]
+      summary: Current session
+      responses:
+        '200':
+          description: Session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: '#/components/responses/Detail' }
+  /api/auth/renew:
+    post:
+      tags: [auth]
+      summary: Extend the session
+      responses:
+        '200':
+          description: Session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: '#/components/responses/Detail' }
+  /api/auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke the session and clear the cookie
+      responses:
+        '204': { description: Logged out }
+
+  /api/settings/{namespace}:
+    parameters:
+      - name: namespace
+        in: path
+        required: true
+        schema: { type: string, enum: [core, food, money, metrics] }
+    get:
+      tags: [settings]
+      summary: Settings of one namespace, defaults filled in
+      responses:
+        '200':
+          description: Settings object, shape depends on the namespace
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '404': { $ref: '#/components/responses/Message' }
+    put:
+      tags: [settings]
+      summary: Update settings fields of one namespace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operationId]
+              properties:
+                operationId: { $ref: '#/components/schemas/OperationId' }
+              additionalProperties: true
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '400': { $ref: '#/components/responses/Message' }
+        '404': { $ref: '#/components/responses/Message' }
+
+  /api/food/diary-full-update:
+    get:
+      tags: [food]
+      summary: Diary snapshot for one date
+      parameters:
+        - { name: date, in: query, required: true, schema: { type: string, format: date, example: '2026-10-28' } }
+        - { name: offset, in: query, required: true, description: Days around the date to include, schema: { type: integer } }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '400': { $ref: '#/components/responses/Message' }
+  /api/food/catalogue:
+    get:
+      tags: [food]
+      summary: Whole product catalogue with its version
+      responses:
+        '200':
+          description: Catalogue
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version: { type: integer }
+                  entries: { type: array, items: { type: object, additionalProperties: true } }
+  /api/food/catalogue/version:
+    get:
+      tags: [food]
+      summary: Catalogue version, cheap change check
+      responses:
+        '200':
+          description: Version
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version: { type: integer }
+  /api/food/catalogue/{catalogueId}:
+    parameters:
+      - { $ref: '#/components/parameters/CatalogueId' }
+    get:
+      tags: [food]
+      summary: One catalogue entry
+      responses:
+        '200': { $ref: '#/components/responses/ResultData' }
+        '404': { $ref: '#/components/responses/ResultError' }
+    delete:
+      tags: [food]
+      summary: Delete a catalogue entry
+      requestBody: { $ref: '#/components/requestBodies/OperationOnly' }
+      responses:
+        '200': { $ref: '#/components/responses/ResultData' }
+        '404': { $ref: '#/components/responses/ResultError' }
+  /api/food/catalogue/{catalogueId}/regenerate-image:
+    parameters:
+      - { $ref: '#/components/parameters/CatalogueId' }
+    post:
+      tags: [food]
+      summary: Regenerate the product image (admins)
+      responses:
+        '202': { $ref: '#/components/responses/ResultData' }
+        '403': { $ref: '#/components/responses/ResultError' }
+        '404': { $ref: '#/components/responses/ResultError' }
+        '409': { $ref: '#/components/responses/ResultError' }
+        '429': { $ref: '#/components/responses/ResultError' }
+  /api/food/personal-kcals:
+    get:
+      tags: [food]
+      summary: Current personal kcal norms of the user
+      responses:
+        '200': { $ref: '#/components/responses/ResultData' }
+  /api/food/stats:
+    get:
+      tags: [food]
+      summary: Daily stats, windowed to a recent range unless from=all
+      parameters:
+        - { name: from, in: query, schema: { type: string, enum: [all] } }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+  /api/food/product-history:
+    get:
+      tags: [food]
+      summary: Diary history of chosen products
+      parameters:
+        - { name: catalogueIds, in: query, required: true, description: Comma-separated catalogue ids, max 20, schema: { type: string, example: '1,2,3' } }
+      responses:
+        '200': { $ref: '#/components/responses/ResultData' }
+        '400': { $ref: '#/components/responses/ResultError' }
+  /api/food/search:
+    get:
+      tags: [food]
+      summary: Search the catalogue
+      parameters:
+        - { name: query, in: query, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: '#/components/responses/ResultData' }
+        '400': { $ref: '#/components/responses/ResultError' }
+  /api/food/generate-product-preview:
+    post:
+      tags: [food]
+      summary: Generate a product draft from a description (OpenRouter)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [description]
+              properties:
+                description: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/ResultData' }
+        '400': { $ref: '#/components/responses/ResultError' }
+  /api/food/save-product:
+    post:
+      tags: [food]
+      summary: Create a product, or update it when id is set
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operationId, name, kcals]
+              properties:
+                operationId: { $ref: '#/components/schemas/OperationId' }
+                id: { type: integer, format: int64, nullable: true }
+                name: { type: string }
+                kcals: { type: integer, format: int64 }
+                protein: { type: number }
+                fat: { type: number }
+                carbs: { type: number }
+                fiber: { type: number }
+                description: { type: string }
+                archived: { type: boolean, nullable: true }
+      responses:
+        '200': { $ref: '#/components/responses/ResultData' }
+        '201': { $ref: '#/components/responses/ResultData' }
+        '400': { $ref: '#/components/responses/ResultError' }
+  /api/food/diary/:
+    post:
+      tags: [food]
+      summary: Add a diary entry
+      requestBody: { $ref: '#/components/requestBodies/DiaryEntryCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result: { type: boolean }
+                  diaryId: { type: integer, format: int64 }
+                  kcals: { type: integer }
+                  version: { type: integer }
+        '400': { $ref: '#/components/responses/ResultError' }
+  /api/food/diary:
+    put:
+      tags: [food]
+      summary: Edit a diary entry through a history action
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operationId, id, historyAction]
+              properties:
+                operationId: { $ref: '#/components/schemas/OperationId' }
+                id: { type: integer, format: int64 }
+                foodCatalogueId: { type: integer, format: int64 }
+                foodWeight: { type: integer, format: int64 }
+                historyAction: { type: string }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result: { type: boolean }
+                  diaryId: { type: integer, format: int64 }
+                  kcals: { type: integer }
+                  version: { type: integer }
+                  appliedHistoryEntry: { $ref: '#/components/schemas/HistoryEntry' }
+        '400': { $ref: '#/components/responses/ResultError' }
+  /api/food/diary/{diaryId}:
+    delete:
+      tags: [food]
+      summary: Delete a diary entry
+      parameters:
+        - { name: diaryId, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody: { $ref: '#/components/requestBodies/OperationOnly' }
+      responses:
+        '200': { $ref: '#/components/responses/Result' }
+        '404': { $ref: '#/components/responses/ResultError' }
+  /api/food/diary/day/{dateISO}:
+    delete:
+      tags: [food]
+      summary: Delete all diary entries of a day
+      parameters:
+        - { $ref: '#/components/parameters/DateISO' }
+      requestBody: { $ref: '#/components/requestBodies/OperationOnly' }
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result: { type: boolean }
+                  deletedEntriesCount: { type: integer }
+        '400': { $ref: '#/components/responses/ResultError' }
+  /api/food/diary/day/{dateISO}/restore:
+    post:
+      tags: [food]
+      summary: Restore the entries of a deleted day
+      parameters:
+        - { $ref: '#/components/parameters/DateISO' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operationId, entries]
+              properties:
+                operationId: { $ref: '#/components/schemas/OperationId' }
+                entries:
+                  type: array
+                  items: { $ref: '#/components/schemas/DiaryEntryCreate' }
+      responses:
+        '201':
+          description: Restored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result: { type: boolean }
+                  diaryEntries: { type: array, items: { type: object, additionalProperties: true } }
+        '400': { $ref: '#/components/responses/ResultError' }
+  /api/food/body-weight:
+    post:
+      tags: [food]
+      summary: Save the body weight of a day
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operationId, dateISO, bodyWeight]
+              properties:
+                operationId: { $ref: '#/components/schemas/OperationId' }
+                dateISO: { type: string, format: date }
+                bodyWeight: { type: number }
+      responses:
+        '201': { $ref: '#/components/responses/Result' }
+        '400': { $ref: '#/components/responses/ResultError' }
+  /api/images/food/{filename}:
+    get:
+      tags: [food]
+      summary: Product image variant, e.g. `12-medium-v5.webp`
+      security: []
+      parameters:
+        - { name: filename, in: path, required: true, schema: { type: string, example: 1-medium-v5.webp } }
+      responses:
+        '200':
+          description: Image
+          content:
+            image/webp: { schema: { type: string, format: binary } }
+            image/png: { schema: { type: string, format: binary } }
+        '404': { description: Unknown image }
+
+  /api/money/snapshot:
+    get:
+      tags: [money]
+      summary: Everything the money page needs in one response
+      responses:
+        '200':
+          description: Snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data: { $ref: '#/components/schemas/MoneySnapshot' }
+  /api/money/organizations:
+    get:
+      tags: [money]
+      summary: List organizations
+      responses:
+        '200': { $ref: '#/components/responses/MoneyList' }
+    post:
+      tags: [money]
+      summary: Create an organization
+      requestBody: { $ref: '#/components/requestBodies/MoneyOrganization' }
+      responses:
+        '201': { $ref: '#/components/responses/MoneyCreated' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+  /api/money/organizations/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/MoneyId' }
+    put:
+      tags: [money]
+      summary: Update an organization
+      requestBody: { $ref: '#/components/requestBodies/MoneyOrganization' }
+      responses:
+        '200': { $ref: '#/components/responses/MoneyMessage' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+    delete:
+      tags: [money]
+      summary: Delete an organization
+      responses:
+        '200': { $ref: '#/components/responses/MoneyMessage' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+  /api/money/currencies:
+    get:
+      tags: [money]
+      summary: List currencies
+      responses:
+        '200': { $ref: '#/components/responses/MoneyList' }
+    post:
+      tags: [money]
+      summary: Create a currency
+      requestBody: { $ref: '#/components/requestBodies/MoneyCurrency' }
+      responses:
+        '201': { $ref: '#/components/responses/MoneyCreated' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+  /api/money/currencies/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/MoneyId' }
+    put:
+      tags: [money]
+      summary: Update a currency
+      requestBody: { $ref: '#/components/requestBodies/MoneyCurrency' }
+      responses:
+        '200': { $ref: '#/components/responses/MoneyMessage' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+    delete:
+      tags: [money]
+      summary: Delete a currency
+      responses:
+        '200': { $ref: '#/components/responses/MoneyMessage' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+  /api/money/categories:
+    get:
+      tags: [money]
+      summary: List categories
+      responses:
+        '200': { $ref: '#/components/responses/MoneyList' }
+    post:
+      tags: [money]
+      summary: Create a category
+      requestBody: { $ref: '#/components/requestBodies/MoneyCategory' }
+      responses:
+        '201': { $ref: '#/components/responses/MoneyCreated' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+  /api/money/categories/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/MoneyId' }
+    put:
+      tags: [money]
+      summary: Update a category
+      requestBody: { $ref: '#/components/requestBodies/MoneyCategory' }
+      responses:
+        '200': { $ref: '#/components/responses/MoneyMessage' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+    delete:
+      tags: [money]
+      summary: Delete a category
+      responses:
+        '200': { $ref: '#/components/responses/MoneyMessage' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+  /api/money/accounts:
+    get:
+      tags: [money]
+      summary: List accounts
+      responses:
+        '200': { $ref: '#/components/responses/MoneyList' }
+    post:
+      tags: [money]
+      summary: Create an account
+      requestBody: { $ref: '#/components/requestBodies/MoneyAccount' }
+      responses:
+        '201': { $ref: '#/components/responses/MoneyCreated' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+  /api/money/accounts/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/MoneyId' }
+    put:
+      tags: [money]
+      summary: Update an account
+      requestBody: { $ref: '#/components/requestBodies/MoneyAccount' }
+      responses:
+        '200': { $ref: '#/components/responses/MoneyMessage' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+    delete:
+      tags: [money]
+      summary: Delete an account
+      responses:
+        '200': { $ref: '#/components/responses/MoneyMessage' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+  /api/money/assets:
+    get:
+      tags: [money]
+      summary: List assets
+      responses:
+        '200': { $ref: '#/components/responses/MoneyList' }
+    post:
+      tags: [money]
+      summary: Create an asset
+      requestBody: { $ref: '#/components/requestBodies/MoneyAsset' }
+      responses:
+        '201': { $ref: '#/components/responses/MoneyCreated' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+  /api/money/assets/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/MoneyId' }
+    put:
+      tags: [money]
+      summary: Update an asset
+      requestBody: { $ref: '#/components/requestBodies/MoneyAsset' }
+      responses:
+        '200': { $ref: '#/components/responses/MoneyMessage' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+    delete:
+      tags: [money]
+      summary: Delete an asset
+      responses:
+        '200': { $ref: '#/components/responses/MoneyMessage' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+  /api/money/transactions:
+    get:
+      tags: [money]
+      summary: List transactions
+      responses:
+        '200': { $ref: '#/components/responses/MoneyList' }
+    post:
+      tags: [money]
+      summary: Create a transaction, a transfer creates its twin as well
+      requestBody: { $ref: '#/components/requestBodies/MoneyTransaction' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      id: { type: integer, format: int64 }
+                      twinId: { type: integer, format: int64 }
+                      version: { type: integer }
+        '400': { $ref: '#/components/responses/MoneyError' }
+  /api/money/transactions/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/MoneyId' }
+    put:
+      tags: [money]
+      summary: Update a transaction
+      requestBody: { $ref: '#/components/requestBodies/MoneyTransaction' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      version: { type: integer }
+        '400': { $ref: '#/components/responses/MoneyError' }
+    delete:
+      tags: [money]
+      summary: Delete a transaction
+      requestBody: { $ref: '#/components/requestBodies/OperationOnly' }
+      responses:
+        '200': { $ref: '#/components/responses/MoneyMessage' }
+        '400': { $ref: '#/components/responses/MoneyError' }
+  /api/money/rate-history:
+    get:
+      tags: [money]
+      summary: Currency and asset rate history
+      responses:
+        '200': { $ref: '#/components/responses/MoneyList' }
+
+  /api/metrics/history:
+    post:
+      tags: [metrics]
+      summary: Metrics history from Flatline (admins)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [minuteSince, hourSince, daySince, scope]
+              properties:
+                minuteSince: { type: integer, format: int64 }
+                hourSince: { type: integer, format: int64 }
+                daySince: { type: integer, format: int64 }
+                scope: { type: array, items: { type: object, additionalProperties: true } }
+      responses:
+        '200': { $ref: '#/components/responses/Object' }
+        '400': { $ref: '#/components/responses/Detail' }
+        '403': { $ref: '#/components/responses/Detail' }
+
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: megaapp_session
+  parameters:
+    CatalogueId:
+      name: catalogueId
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    DateISO:
+      name: dateISO
+      in: path
+      required: true
+      schema: { type: string, format: date, example: '2026-10-28' }
+    MoneyId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+  requestBodies:
+    Credentials:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [username, password]
+            properties:
+              username: { type: string }
+              password: { type: string, format: password }
+    OperationOnly:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [operationId]
+            properties:
+              operationId: { $ref: '#/components/schemas/OperationId' }
+    DiaryEntryCreate:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/DiaryEntryCreate' }
+    MoneyOrganization:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [title]
+            properties:
+              title: { type: string }
+              logoBase64: { type: string, nullable: true }
+    MoneyCurrency:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [title, ticker, symbol, symbolPosEnum]
+            properties:
+              title: { type: string }
+              ticker: { type: string }
+              symbol: { type: string }
+              symbolPosEnum: { type: string, enum: [before, after] }
+              whitespace: { type: boolean }
+    MoneyCategory:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [name, categoryType]
+            properties:
+              name: { type: string }
+              parentId: { type: integer, format: int64, nullable: true }
+              categoryType: { type: string, enum: [income, expense] }
+              hiddenOnCharts: { type: boolean }
+              hue: { type: integer, format: int64, nullable: true }
+              lightness: { type: integer, format: int64, nullable: true }
+              saturation: { type: integer, format: int64, nullable: true }
+    MoneyAccount:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [title, currencyId, kind]
+            properties:
+              title: { type: string }
+              currencyId: { type: integer, format: int64 }
+              isInvest: { type: boolean }
+              isArchived: { type: boolean }
+              kind: { type: string, enum: [cash, card, checking, deposit, brokerage, crypto] }
+              organizationId: { type: integer, format: int64, nullable: true }
+    MoneyAsset:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [title, ticker, type]
+            properties:
+              title: { type: string }
+              ticker: { type: string }
+              type: { type: string, enum: [stock, bond, crypto] }
+              accountIds: { type: array, items: { type: integer, format: int64 } }
+              suspendedSince: { type: string, format: date, nullable: true }
+              suspendedUntil: { type: string, format: date, nullable: true }
+    MoneyTransaction:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [operationId, dateISO, accountId, amount, kind]
+            properties:
+              operationId: { $ref: '#/components/schemas/OperationId' }
+              dateISO: { type: string, format: date }
+              accountId: { type: integer, format: int64 }
+              amount: { type: number }
+              twinAccountId: { type: integer, format: int64, nullable: true }
+              twinAmount: { type: number, nullable: true }
+              categoryId: { type: integer, format: int64, nullable: true }
+              kind: { type: string, enum: [income, expense, transfer, invest_buy, invest_sell, invest_dividend] }
+              isGift: { type: boolean }
+              notes: { type: string, nullable: true }
+              detailsJSON: { nullable: true, description: 'Free-form details, stored as JSON' }
+  responses:
+    Status:
+      description: Status
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status: { type: string }
+    Message:
+      description: '`{message}` error'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Message' }
+    Detail:
+      description: '`{detail}` error'
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              detail: { type: string }
+    Object:
+      description: JSON object
+      content:
+        application/json:
+          schema: { type: object, additionalProperties: true }
+    Result:
+      description: '`{result: true}`'
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              result: { type: boolean }
+    ResultData:
+      description: '`{result: true, data}`'
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              result: { type: boolean }
+              data: {}
+    ResultError:
+      description: '`{result: false, error}`'
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              result: { type: boolean }
+              error: { type: string }
+    MoneyList:
+      description: '`{success: true, data: [...]}`'
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success: { type: boolean }
+              data: { type: array, items: { type: object, additionalProperties: true } }
+    MoneyCreated:
+      description: Created
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success: { type: boolean }
+              data:
+                type: object
+                properties:
+                  id: { type: integer, format: int64 }
+    MoneyMessage:
+      description: '`{success: true, message}`'
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success: { type: boolean }
+              message: { type: string }
+    MoneyError:
+      description: '`{success: false, error}`'
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success: { type: boolean }
+              error: { type: string }
+  schemas:
+    Message:
+      type: object
+      properties:
+        message: { type: string }
+    OperationId:
+      type: string
+      description: Client-generated id that makes a repeated write idempotent
+    Session:
+      type: object
+      properties:
+        authenticated: { type: boolean }
+        userId: { type: integer, format: int64 }
+        username: { type: string }
+        isAdmin: { type: boolean }
+        expiresAt: { type: string, format: date-time }
+    HistoryEntry:
+      type: object
+      properties:
+        action: { type: string }
+        value: { type: integer, format: int64 }
+    DiaryEntryCreate:
+      type: object
+      required: [operationId, dateISO, foodCatalogueId, foodWeight]
+      properties:
+        operationId: { $ref: '#/components/schemas/OperationId' }
+        dateISO: { type: string, format: date }
+        foodCatalogueId: { type: integer, format: int64 }
+        foodWeight: { type: integer, format: int64 }
+        history: { type: array, items: { $ref: '#/components/schemas/HistoryEntry' } }
+    MoneySnapshot:
+      type: object
+      properties:
+        currencies: { type: array, items: { type: object, additionalProperties: true } }
+        categories: { type: array, items: { type: object, additionalProperties: true } }
+        organizations: { type: array, items: { type: object, additionalProperties: true } }
+        accounts: { type: array, items: { type: object, additionalProperties: true } }
+        assets: { type: array, items: { type: object, additionalProperties: true } }
+        transactions: { type: array, items: { type: object, additionalProperties: true } }
+        rateHistory: { type: array, items: { type: object, additionalProperties: true } }
