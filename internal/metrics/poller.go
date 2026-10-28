@@ -73,6 +73,9 @@ func (p *Poller) Start() {
 }
 
 func (p *Poller) Close() error {
+	if p == nil {
+		return nil
+	}
 	if p.cancel != nil {
 		p.cancel()
 	}

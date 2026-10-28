@@ -28,6 +28,7 @@ func TestOpsRoutes(t *testing.T) {
 		MigrationsDir:                       filepath.Join(tempDir, "migrations"),
 		PublicDir:                           filepath.Join(tempDir, "public"),
 		BackupsDir:                          filepath.Join(tempDir, "backups"),
+		MetricsEnabled:                      true,
 		FlatlineBaseURL:                     "http://127.0.0.1:1",
 		FlatlinePushTimeout:                 time.Second,
 		FlatlinePollInterval:                time.Hour,

@@ -150,7 +150,9 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger, clk clo
 		quotes.RegisterDebugRoutes(r, quotesModule.debugHandler)
 		backup.RegisterDebugRoutes(r, backupModule.debugHandler)
 	})
-	metrics.RegisterRoutes(router, authModule.service, metricsModule.historyHandler)
+	if metricsModule.historyHandler != nil {
+		metrics.RegisterRoutes(router, authModule.service, metricsModule.historyHandler)
+	}
 	ws.RegisterRoutes(router, wsModule.handler)
 	registerSwagger(router)
 

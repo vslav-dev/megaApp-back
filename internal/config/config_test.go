@@ -50,6 +50,7 @@ func TestLoadUsesDefaults(t *testing.T) {
 	t.Setenv("BACKUP_STORAGE_ACCESS_KEY_ID", "")
 	t.Setenv("BACKUP_STORAGE_SECRET_ACCESS_KEY", "")
 	t.Setenv("BACKUP_OPERATION_TIMEOUT_SECONDS", "")
+	t.Setenv("METRICS_ENABLED", "")
 	t.Setenv("METRICS_SERVICE_KEY", "")
 	t.Setenv("FLATLINE_BASE_URL", "http://127.0.0.1:4000")
 	t.Setenv("FLATLINE_PUSH_TIMEOUT_SECONDS", "")
@@ -193,6 +194,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.BackupOperationTimeout != 300*time.Second {
 		t.Fatalf("BackupOperationTimeout = %v, want 300s", cfg.BackupOperationTimeout)
 	}
+	if !cfg.MetricsEnabled {
+		t.Fatal("MetricsEnabled = false, want true")
+	}
 	if cfg.MetricsServiceKey != "megaapp" {
 		t.Fatalf("MetricsServiceKey = %q, want megaapp", cfg.MetricsServiceKey)
 	}
@@ -296,6 +300,20 @@ func TestValidateRejectsInvalidBackupConfig(t *testing.T) {
 	}
 }
 
+func TestValidateRequiresFlatlineOnlyWithMetricsEnabled(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.FlatlineBaseURL = ""
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want error with metrics enabled and no Flatline URL")
+	}
+
+	cfg.MetricsEnabled = false
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil with metrics disabled", err)
+	}
+}
+
 func TestValidateAcceptsProdLikeConfig(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.AppEnv = "prod"
@@ -347,6 +365,7 @@ func validTestConfig() Config {
 		BackupStorageSecretAccessKey:        "secret",
 		BackupOperationTimeout:              300 * time.Second,
 		MetricsServiceKey:                   "megaapp",
+		MetricsEnabled:                      true,
 		FlatlineBaseURL:                     "http://127.0.0.1:4000",
 		FlatlinePushTimeout:                 time.Second,
 		FlatlinePollInterval:                10 * time.Second,
