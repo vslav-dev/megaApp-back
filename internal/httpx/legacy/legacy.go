@@ -17,7 +17,7 @@ const (
 	ErrorKindNotFound        ErrorKind = "not_found"
 	ErrorKindConflict        ErrorKind = "conflict"
 	ErrorKindTooManyRequests ErrorKind = "too_many_requests"
-	ErrorKindInternal       ErrorKind = "internal"
+	ErrorKindInternal        ErrorKind = "internal"
 	ErrorKindExternal        ErrorKind = "external"
 	ErrorKindRequestTooLarge ErrorKind = "request_too_large"
 )

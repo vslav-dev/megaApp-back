@@ -621,17 +621,6 @@ func TestSearchPreviewAndSaveProduct(t *testing.T) {
 	}
 }
 
-type fixedEmbeddingGenerator struct {
-	vectors map[string][]float64
-}
-
-func (g fixedEmbeddingGenerator) GenerateEmbedding(ctx context.Context, text string) ([]float64, error) {
-	if vec, ok := g.vectors[text]; ok {
-		return vec, nil
-	}
-	return []float64{0, 0}, nil
-}
-
 func TestSaveProductSameOperationIDReplaysWithoutDuplicate(t *testing.T) {
 	db := openFoodTestDB(t)
 	service := NewService(NewRepository(db, sqlite.WriteDB{DB: db}), idempotency.NewStore(sqlite.WriteDB{DB: db}))

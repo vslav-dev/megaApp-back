@@ -85,7 +85,7 @@ func readOutboxLines(t *testing.T, path string) []outboxLine {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	lines := make([]outboxLine, 0)
 	scanner := bufio.NewScanner(file)

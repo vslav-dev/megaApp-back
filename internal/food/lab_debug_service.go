@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -506,13 +505,4 @@ func (s *DebugService) ImportCatalogue(ctx context.Context, filename string) (ma
 
 func previewToLabProduct(preview ProductPreviewData) LabGeneratedProduct {
 	return LabGeneratedProduct{Name: preview.GeneralizedName, Description: preview.Description, Kcals: preview.Kcals, Protein: preview.Protein, Fat: preview.Fat, Carbs: preview.Carbs, Fiber: preview.Fiber}
-}
-
-func sortableKeys(values map[int64]string) []int64 {
-	ids := make([]int64, 0, len(values))
-	for id := range values {
-		ids = append(ids, id)
-	}
-	sort.Slice(ids, func(i int, j int) bool { return ids[i] < ids[j] })
-	return ids
 }

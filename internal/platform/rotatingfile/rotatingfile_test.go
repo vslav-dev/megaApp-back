@@ -34,7 +34,7 @@ func readZipEntry(t *testing.T, path string) string {
 	if err != nil {
 		t.Fatalf("zip.OpenReader(%q) error = %v", path, err)
 	}
-	defer archive.Close()
+	defer func() { _ = archive.Close() }()
 	if len(archive.File) != 1 {
 		t.Fatalf("archive %q has %d entries, want 1", path, len(archive.File))
 	}

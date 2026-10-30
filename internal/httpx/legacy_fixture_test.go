@@ -308,13 +308,13 @@ func copyLegacyFixtureDB(t *testing.T, from string, to string) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	dst, err := os.Create(to)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	defer dst.Close()
+	defer func() { _ = dst.Close() }()
 
 	if _, err := io.Copy(dst, src); err != nil {
 		t.Fatalf("Copy() error = %v", err)

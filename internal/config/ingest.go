@@ -14,11 +14,12 @@ const (
 	ingestSourcesEnv = "INGEST_SOURCES"
 	ingestKeysEnv    = "INGEST_KEYS"
 
-	minIngestRotateBytes      int64 = 1_000_000
-	maxIngestSourceNameLength       = 32
-	minIngestKeyLength              = 24
-	maxIngestKeyLength              = 128
+	maxIngestSourceNameLength = 32
+	minIngestKeyLength        = 24
+	maxIngestKeyLength        = 128
 )
+
+const minIngestRotateBytes int64 = 1_000_000
 
 var (
 	ingestSourceNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)

@@ -196,7 +196,7 @@ func zipFile(srcPath, zipPath string) (err error) {
 	if err != nil {
 		return fmt.Errorf("open file to archive: %w", err)
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	dst, err := os.Create(zipPath)
 	if err != nil {

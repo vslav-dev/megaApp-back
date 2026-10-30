@@ -461,8 +461,11 @@ func encodeWebP(path string, img image.Image, quality float32) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-	return webp.Encode(file, img, &webp.Options{Quality: quality})
+	defer func() { _ = file.Close() }()
+	if err := webp.Encode(file, img, &webp.Options{Quality: quality}); err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 func encodePNG(path string, img image.Image) error {
@@ -470,9 +473,12 @@ func encodePNG(path string, img image.Image) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	encoder := png.Encoder{CompressionLevel: png.BestCompression}
-	return encoder.Encode(file, img)
+	if err := encoder.Encode(file, img); err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 func buildSquircleVariant(source image.Image) image.Image {

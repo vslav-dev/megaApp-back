@@ -176,6 +176,9 @@ func TestSearchPersonalHistoryWorksInBothDirectionsOfTyping(t *testing.T) {
 			}
 			queries = append(queries, query)
 		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err() = %v", err)
+		}
 		if !slices.Equal(queries, []string{"конфет", "конфеты"}) {
 			t.Fatalf("stored queries = %v, want one row per choice", queries)
 		}
@@ -329,6 +332,9 @@ func TestSearchPicksExpireAfterTheRetention(t *testing.T) {
 			}
 			queries = append(queries, query)
 		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err() = %v", err)
+		}
 		if !slices.Equal(queries, []string{"суфле"}) {
 			t.Fatalf("stored queries after the retention = %v, want only the new one (of every user)", queries)
 		}
@@ -473,6 +479,9 @@ func TestCreateDiaryEntryOverHTTPRecordsTheSearchQueryButRestoreDoesNot(t *testi
 			t.Fatalf("Scan() error = %v", err)
 		}
 		queries = append(queries, query)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err() = %v", err)
 	}
 	if !slices.Equal(queries, []string{"apple"}) {
 		t.Fatalf("stored queries = %v, want only the one from the create that sent it", queries)

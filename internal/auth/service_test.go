@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ func TestServiceRegisterLoginAuthenticateAndRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
-	if _, err := service.Register(context.Background(), "alice", "password123"); err != ErrUsernameTaken {
+	if _, err := service.Register(context.Background(), "alice", "password123"); !errors.Is(err, ErrUsernameTaken) {
 		t.Fatalf("Register() duplicate error = %v, want ErrUsernameTaken", err)
 	}
 
@@ -42,7 +43,7 @@ func TestServiceRegisterLoginAuthenticateAndRevoke(t *testing.T) {
 	if err := service.Revoke(context.Background(), identity.SessionID); err != nil {
 		t.Fatalf("Revoke() error = %v", err)
 	}
-	if _, err := service.AuthenticateCookie(context.Background(), login.Cookie); err != ErrInvalidSession {
+	if _, err := service.AuthenticateCookie(context.Background(), login.Cookie); !errors.Is(err, ErrInvalidSession) {
 		t.Fatalf("AuthenticateCookie() revoked error = %v, want ErrInvalidSession", err)
 	}
 }

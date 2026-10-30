@@ -1,0 +1,43 @@
+version: "2"
+
+# Включён блок 1 («необходимое»). Блоки 2 и 3 и их состав: plans/49-go-linting.implementation-plan.md
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - sqlclosecheck
+    - rowserrcheck
+    - errorlint
+    - noctx
+    - nilerr
+    - durationcheck
+
+  settings:
+    errcheck:
+      # [LOAD-BEARING] Close on read-side handles: the error carries no data loss and `defer x.Close()` is the Go idiom. Close on writers (os.File, archives) stays checked.
+      exclude-functions:
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+        - (io.ReadCloser).Close
+
+  exclusions:
+    rules:
+      # [LOAD-BEARING] noctx in tests: a test lives milliseconds on in-memory SQLite, context cancels nothing there. Production code stays checked.
+      - path: _test\.go
+        linters:
+          - noctx
+      # [LOAD-BEARING] bodyclose in tests: false positives on websocket.Dial (gorilla: the body needs no closing) and on helpers that close the body themselves on the non-OK branch under test.
+      - path: _test\.go
+        linters:
+          - bodyclose
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

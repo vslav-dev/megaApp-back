@@ -113,7 +113,7 @@ func TestAppServeAndShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	errCh := make(chan error, 1)
 	go func() {

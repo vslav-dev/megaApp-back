@@ -350,7 +350,3 @@ func extractClientID(r *http.Request) string {
 	}
 	return clientID
 }
-
-func writeFoodResultError(w http.ResponseWriter, statusCode int, message string) {
-	legacy.WriteResultError(w, statusCode, message)
-}

@@ -169,7 +169,7 @@ func readOutboxFile(path string, use func(outboxLine) error) error {
 	if err != nil {
 		return fmt.Errorf("open metrics outbox %q: %w", path, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	reader := bufio.NewReader(file)
 	for lineNumber := 1; ; lineNumber++ {

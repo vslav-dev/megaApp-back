@@ -331,7 +331,7 @@ func validateWhitelist(descriptor namespaceDescriptor, fields map[string]json.Ra
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(descriptor.newStruct()); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidSettingPayload, err)
+		return fmt.Errorf("%w: %w", ErrInvalidSettingPayload, err)
 	}
 
 	return nil
@@ -352,7 +352,7 @@ func rejectNullForNonPointerFields(descriptor namespaceDescriptor, fields map[st
 		if name == "" || name == "-" {
 			continue
 		}
-		nonPointerFields[name] = field.Type.Kind() != reflect.Ptr
+		nonPointerFields[name] = field.Type.Kind() != reflect.Pointer
 	}
 
 	for key, raw := range fields {
@@ -366,7 +366,7 @@ func rejectNullForNonPointerFields(descriptor namespaceDescriptor, fields map[st
 
 func validateRoundTrip(descriptor namespaceDescriptor, mergedJSON string) error {
 	if err := json.Unmarshal([]byte(mergedJSON), descriptor.newStruct()); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidSettingPayload, err)
+		return fmt.Errorf("%w: %w", ErrInvalidSettingPayload, err)
 	}
 	return nil
 }

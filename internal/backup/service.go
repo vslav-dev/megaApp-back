@@ -133,13 +133,13 @@ func createZipArchive(snapshotPath string, archivePath string, modifiedAt time.T
 	if err != nil {
 		return legacy.WrapError(legacy.ErrorKindInternal, "Failed to open snapshot file", err)
 	}
-	defer snapshotFile.Close()
+	defer func() { _ = snapshotFile.Close() }()
 
 	archiveFile, err := os.Create(archivePath)
 	if err != nil {
 		return legacy.WrapError(legacy.ErrorKindInternal, "Failed to create archive file", err)
 	}
-	defer archiveFile.Close()
+	defer func() { _ = archiveFile.Close() }()
 
 	zipWriter := zip.NewWriter(archiveFile)
 	entryWriter, err := zipWriter.CreateHeader(&zip.FileHeader{
@@ -157,6 +157,9 @@ func createZipArchive(snapshotPath string, archivePath string, modifiedAt time.T
 	}
 	if err := zipWriter.Close(); err != nil {
 		return legacy.WrapError(legacy.ErrorKindInternal, "Failed to finalize archive", err)
+	}
+	if err := archiveFile.Close(); err != nil {
+		return legacy.WrapError(legacy.ErrorKindInternal, "Failed to close archive file", err)
 	}
 	return nil
 }

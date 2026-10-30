@@ -120,7 +120,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger, clk clo
 				_ = background.Close()
 			}
 			_ = metricsModule.poller.Close()
-		_ = metricsModule.processSampler.Close()
+			_ = metricsModule.processSampler.Close()
 			_ = wsModule.hub.Close()
 			_ = jobRuntime.Close()
 			_ = db.Close()
