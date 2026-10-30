@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +24,7 @@ func glob(t *testing.T, pattern string) []string {
 	if err != nil {
 		t.Fatalf("Glob(%q) error = %v", pattern, err)
 	}
-	sort.Strings(matches)
+	slices.Sort(matches)
 	return matches
 }
 
@@ -184,7 +184,7 @@ func TestRotationsInTheSameInstantKeepEveryFile(t *testing.T) {
 	for _, archive := range archives {
 		contents = append(contents, readZipEntry(t, archive))
 	}
-	sort.Strings(contents)
+	slices.Sort(contents)
 	if got := contents[0] + contents[1] + contents[2]; got != "aaaabbbbcccc" {
 		t.Fatalf("archived contents = %v, want aaaa, bbbb, cccc", contents)
 	}

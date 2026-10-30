@@ -3,9 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
-	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -176,14 +174,21 @@ func Middleware(service *Service) func(http.Handler) http.Handler {
 	}
 }
 
+// crossOriginProtection judges by Sec-Fetch-Site, falling back to Origin against Host. In local dev
+// `ng serve` proxies /api with changeOrigin, so the backend sees Host localhost:3000 while the
+// browser still reports the call as same-origin: no trusted dev origins are needed.
+var crossOriginProtection = newCrossOriginProtection()
+
+func newCrossOriginProtection() *http.CrossOriginProtection {
+	protection := http.NewCrossOriginProtection()
+	protection.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		legacy.WriteDetail(w, http.StatusForbidden, "Cross-origin request rejected")
+	}))
+	return protection
+}
+
 func OriginMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isUnsafeMethod(r.Method) && !isSameOrigin(r) {
-			legacy.WriteDetail(w, http.StatusForbidden, "Cross-origin request rejected")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+	return crossOriginProtection.Handler(next)
 }
 
 func IdentityFromContext(ctx context.Context) (Identity, bool) {
@@ -232,27 +237,4 @@ func sessionCookieValue(r *http.Request) string {
 
 func requestIsHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-}
-
-func isUnsafeMethod(method string) bool {
-	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
-}
-
-func isSameOrigin(r *http.Request) bool {
-	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	if origin == "" {
-		return true
-	}
-	parsed, err := url.Parse(origin)
-	if err != nil || parsed.Host == "" {
-		return false
-	}
-	if strings.EqualFold(parsed.Host, r.Host) {
-		return true
-	}
-	host, port, err := net.SplitHostPort(r.Host)
-	if err != nil || (host != "localhost" && host != "127.0.0.1") || port != "3000" {
-		return false
-	}
-	return (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1") && (parsed.Port() == "4200" || parsed.Port() == "4201")
 }

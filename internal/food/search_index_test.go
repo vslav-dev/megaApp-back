@@ -422,18 +422,15 @@ func TestSearchIndexHolderInvalidateDropsSnapshotOfRunningBuild(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		if _, err := holder.Get(context.Background(), build); err != nil {
 			t.Errorf("Get() error = %v", err)
 		}
-	}()
+	})
 	<-buildStarted
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		holder.Invalidate()
-	}()
+	})
 	time.Sleep(20 * time.Millisecond) // let Invalidate queue behind the running build
 	close(releaseBuild)
 	wg.Wait()

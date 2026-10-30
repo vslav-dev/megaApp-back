@@ -11,7 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -129,7 +129,7 @@ func (s testServer) storedLines(t *testing.T, source string) []map[string]any {
 	if err != nil {
 		t.Fatalf("Glob() error = %v", err)
 	}
-	sort.Strings(files)
+	slices.Sort(files)
 	var lines []map[string]any
 	for _, file := range files {
 		data, err := os.ReadFile(file)

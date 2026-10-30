@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -125,6 +125,6 @@ func rejectUnknownIngestVariables() error {
 	if len(unknown) == 0 {
 		return nil
 	}
-	sort.Strings(unknown)
+	slices.Sort(unknown)
 	return fmt.Errorf("load config: unexpected %s: only %s and %s exist", strings.Join(unknown, ", "), ingestSourcesEnv, ingestKeysEnv)
 }

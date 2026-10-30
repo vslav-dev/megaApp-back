@@ -1,13 +1,14 @@
 package food
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"math"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -1073,12 +1074,8 @@ func buildProductStats(productKcal map[int64]float64, productWeight map[int64]fl
 func rankProducts(products []ProductStat, keyFn func(ProductStat) float64) []ProductStat {
 	sorted := make([]ProductStat, len(products))
 	copy(sorted, products)
-	sort.Slice(sorted, func(i, j int) bool {
-		ki, kj := keyFn(sorted[i]), keyFn(sorted[j])
-		if ki != kj {
-			return ki > kj
-		}
-		return sorted[i].CatalogueID < sorted[j].CatalogueID
+	slices.SortFunc(sorted, func(a, b ProductStat) int {
+		return cmp.Or(cmp.Compare(keyFn(b), keyFn(a)), cmp.Compare(a.CatalogueID, b.CatalogueID))
 	})
 	if len(sorted) > topProductsCount {
 		sorted = sorted[:topProductsCount]
@@ -1370,7 +1367,7 @@ func sortedKeys(input map[string]float64) []string {
 	for key := range input {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return keys
 }
 

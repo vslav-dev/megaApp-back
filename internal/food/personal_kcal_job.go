@@ -1,13 +1,13 @@
 package food
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"maps"
 	"math"
 	"math/rand"
 	"slices"
-	"sort"
 	"time"
 )
 
@@ -315,7 +315,7 @@ func runPersonalKcalMonthGA(seed personalKcalGenome, month personalKcalMonthBuck
 		for i, genome := range population {
 			scored[i] = scoredGenome{genome: genome, score: fitnessOf(genome)}
 		}
-		sort.Slice(scored, func(i, j int) bool { return scored[i].score < scored[j].score })
+		slices.SortFunc(scored, func(a, b scoredGenome) int { return cmp.Compare(a.score, b.score) })
 
 		if scored[0].score < bestScore-1e-9 {
 			bestScore = scored[0].score

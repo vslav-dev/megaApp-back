@@ -2,13 +2,13 @@ package money
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image/png"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -842,11 +842,8 @@ func (s *Service) computeEOMHeldTickers(investAssetTrades []InvestAssetTrade) ma
 		return map[string]map[string]struct{}{}
 	}
 
-	sort.Slice(events, func(i int, j int) bool {
-		if events[i].DateISO == events[j].DateISO {
-			return events[i].ID < events[j].ID
-		}
-		return events[i].DateISO < events[j].DateISO
+	slices.SortFunc(events, func(a, b tradeEvent) int {
+		return cmp.Or(cmp.Compare(a.DateISO, b.DateISO), cmp.Compare(a.ID, b.ID))
 	})
 
 	firstYear, firstMonth, ok := parseISODateParts(events[0].DateISO)

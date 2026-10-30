@@ -10,7 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -42,7 +42,7 @@ func TestLegacyFixtureCriticalRoutesMatchRecordedParity(t *testing.T) {
 	for date := range statsData {
 		statsDates = append(statsDates, date)
 	}
-	sort.Strings(statsDates)
+	slices.Sort(statsDates)
 	if len(statsDates) != 2074 {
 		t.Fatalf("stats len = %d, want 2074", len(statsDates))
 	}
@@ -166,9 +166,7 @@ func TestLegacyFixtureCriticalRoutesHandleLowConcurrency(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 3 {
 		for _, url := range urls {
-			wg.Add(1)
-			go func(url string) {
-				defer wg.Done()
+			wg.Go(func() {
 				request, err := http.NewRequest(http.MethodGet, url, nil)
 				if err != nil {
 					errCh <- err
@@ -184,7 +182,7 @@ func TestLegacyFixtureCriticalRoutesHandleLowConcurrency(t *testing.T) {
 				if response.StatusCode != http.StatusOK {
 					errCh <- errUnexpectedStatus{url: url, statusCode: response.StatusCode}
 				}
-			}(url)
+			})
 		}
 	}
 	wg.Wait()

@@ -4,8 +4,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	chimiddleware "github.com/go-chi/chi/v5/middleware"
 )
 
 func TestServerOnlyMiddleware(t *testing.T) {
@@ -28,10 +26,9 @@ func TestServerOnlyMiddleware(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// RealIP sits in front exactly as in the real router: it rewrites RemoteAddr from headers.
-			handler := chimiddleware.RealIP(ServerOnlyMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handler := ServerOnlyMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
-			})))
+			}))
 
 			request := httptest.NewRequest(http.MethodGet, "/api/debug/ping", nil)
 			request.RemoteAddr = tt.remoteAddr

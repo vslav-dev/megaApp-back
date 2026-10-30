@@ -1,9 +1,10 @@
 package metrics
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
-	"sort"
+	"slices"
 	"time"
 
 	clockplatform "megaapp-back/internal/platform/clock"
@@ -154,8 +155,8 @@ func (p *Poller) buildLatestSnapshot() LatestSnapshot {
 			Metrics:    metrics,
 		})
 	}
-	sort.Slice(services, func(i, j int) bool {
-		return services[i].Service < services[j].Service
+	slices.SortFunc(services, func(a, b ServiceLatest) int {
+		return cmp.Compare(a.Service, b.Service)
 	})
 	return LatestSnapshot{Services: services}
 }

@@ -42,6 +42,7 @@ func run() int {
 	var serveErr error
 	select {
 	case <-sigCtx.Done():
+		logger.Info("app_stopping", "cause", context.Cause(sigCtx))
 	case serveErr = <-serveErrCh:
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -207,7 +208,7 @@ func TestApplyMigrationsCreatesSchemaMigrationsAndRunsFiles(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	if err := ApplyMigrations(context.Background(), db.SQL(), migrationsDir); err != nil {
+	if err := ApplyMigrations(context.Background(), db.SQL(), migrationsDir, slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("ApplyMigrations() error = %v", err)
 	}
 

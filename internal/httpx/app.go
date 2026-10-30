@@ -51,7 +51,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger, clk clo
 		return nil, err
 	}
 
-	if err := sqliteplatform.ApplyMigrations(ctx, db.SQL(), cfg.MigrationsDir); err != nil {
+	if err := sqliteplatform.ApplyMigrations(ctx, db.SQL(), cfg.MigrationsDir, logger); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -179,7 +179,6 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger, clk clo
 func chiRouter(logger *slog.Logger, observer Observer, maxRequestBodyBytes int64, maxMultipartBodyBytes int64) chi.Router {
 	router := chi.NewRouter()
 	router.Use(chimiddleware.RequestID)
-	router.Use(chimiddleware.RealIP)
 	router.Use(chimiddleware.Recoverer)
 	router.Use(RequestBodyLimitMiddleware(maxRequestBodyBytes, maxMultipartBodyBytes))
 	router.Use(LoggingMiddleware(logger, observer))

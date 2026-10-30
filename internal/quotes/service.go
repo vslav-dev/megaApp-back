@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	platformclock "megaapp-back/internal/platform/clock"
@@ -112,7 +112,7 @@ func (s *Service) Run(ctx context.Context) (RunResult, error) {
 		}
 		dates = append(dates, dateISO)
 	}
-	sort.Strings(dates)
+	slices.Sort(dates)
 
 	upsertedCount := 0
 	for _, dateISO := range dates {

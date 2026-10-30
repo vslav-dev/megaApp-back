@@ -263,12 +263,12 @@ func readProcessCPUTicks() (float64, error) {
 }
 
 func parseProcessCPUTicks(raw string) (float64, error) {
-	closeIndex := strings.LastIndex(raw, ")")
-	if closeIndex == -1 {
+	_, afterCommand, found := strings.CutLast(raw, ")")
+	if !found {
 		return 0, fmt.Errorf("process stat missing command")
 	}
 
-	fields := strings.Fields(raw[closeIndex+1:])
+	fields := strings.Fields(afterCommand)
 	if len(fields) < 13 {
 		return 0, fmt.Errorf("process stat has %d fields", len(fields))
 	}

@@ -1,10 +1,11 @@
 package food
 
 import (
+	"cmp"
 	"context"
 	"encoding/binary"
 	"math"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"unicode"
@@ -129,11 +130,8 @@ func (idx *searchIndex) rank(scores baseScores, scope SearchScope, bonuses map[i
 		scored = append(scored, scoredEntry{entry: entry, score: scores[i].value + bonus})
 	}
 
-	sort.Slice(scored, func(i int, j int) bool {
-		if scored[i].score == scored[j].score {
-			return scored[i].entry.name < scored[j].entry.name
-		}
-		return scored[i].score > scored[j].score
+	slices.SortFunc(scored, func(a, b scoredEntry) int {
+		return cmp.Or(cmp.Compare(b.score, a.score), strings.Compare(a.entry.name, b.entry.name), cmp.Compare(a.entry.id, b.entry.id))
 	})
 
 	if len(scored) > searchResultLimit {

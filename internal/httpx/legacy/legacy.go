@@ -61,8 +61,7 @@ func ErrorKindOf(err error) ErrorKind {
 }
 
 func ErrorMessageOf(err error, fallback string) string {
-	var appErr *AppError
-	if errors.As(err, &appErr) && appErr.Message != "" {
+	if appErr, ok := errors.AsType[*AppError](err); ok && appErr.Message != "" {
 		return appErr.Message
 	}
 	if fallback != "" {

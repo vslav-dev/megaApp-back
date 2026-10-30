@@ -15,10 +15,8 @@ var proxyHeaders = []string{"X-Real-IP", "X-Forwarded-For", "True-Client-IP"}
 // ServerOnlyMiddleware lets through only calls made from the server itself (curl over SSH).
 // Modeled on Flatline's allowlist, with one difference: Flatline trusts only the raw TCP peer
 // address, but here nginx runs on the same host, so that address is loopback for every request,
-// external ones included. The proxy headers are what tell the two apart. The chi RealIP
-// middleware rewrites RemoteAddr from headers a client can send (True-Client-IP), so the address
-// check is only meaningful together with the header check: without proxy headers RealIP leaves
-// RemoteAddr as the real TCP peer.
+// external ones included. The proxy headers are what tell the two apart. RemoteAddr is the real
+// TCP peer: nothing in the router rewrites it from client-supplied headers.
 func ServerOnlyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isServerLocalRequest(r) {

@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -130,7 +130,7 @@ func (w *Writer) resume() error {
 	if len(opened) == 0 {
 		return nil
 	}
-	sort.Strings(opened)
+	slices.Sort(opened)
 	w.openedAt = opened[len(opened)-1]
 	info, err := os.Stat(w.activePath())
 	if err != nil {

@@ -7,7 +7,7 @@ import (
 	"maps"
 	"net/http"
 	"reflect"
-	"sort"
+	"slices"
 	"testing"
 	"time"
 
@@ -119,15 +119,15 @@ func TestServiceRunDiscoversTickersAndUpsertsRates(t *testing.T) {
 	if !reflect.DeepEqual(currencyTickers, []string{"EUR", "RUB"}) {
 		t.Fatalf("currencyTickers = %v, want [EUR RUB]", currencyTickers)
 	}
-	sort.Strings(cryptoTickers)
+	slices.Sort(cryptoTickers)
 	if !reflect.DeepEqual(cryptoTickers, []string{"BTC"}) {
 		t.Fatalf("cryptoTickers = %v, want [BTC]", cryptoTickers)
 	}
-	sort.Strings(stockTickers)
+	slices.Sort(stockTickers)
 	if !reflect.DeepEqual(stockTickers, []string{"AAPL"}) {
 		t.Fatalf("stockTickers = %v, want [AAPL]", stockTickers)
 	}
-	sort.Strings(bondTickers)
+	slices.Sort(bondTickers)
 	if !reflect.DeepEqual(bondTickers, []string{"OFZ"}) {
 		t.Fatalf("bondTickers = %v, want [OFZ]", bondTickers)
 	}
