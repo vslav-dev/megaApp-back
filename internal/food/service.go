@@ -483,7 +483,7 @@ func (s *Service) imageVersion(catalogueID int64) *int64 {
 	return s.imageVersions.ImageVersion(catalogueID)
 }
 
-func (s *Service) CreateDiaryEntry(ctx context.Context, userID int64, operationID string, dateISO string, foodCatalogueID int64, foodWeight int64, history []HistoryEntry) (entry DiaryEntry, applied bool, err error) {
+func (s *Service) CreateDiaryEntry(ctx context.Context, userID int64, operationID string, dateISO string, foodCatalogueID int64, foodWeight int64, history []HistoryEntry, searchQuery string) (entry DiaryEntry, applied bool, err error) {
 	tx, err := s.idempotency.BeginTx(ctx)
 	if err != nil {
 		return DiaryEntry{}, false, err
@@ -520,6 +520,10 @@ func (s *Service) CreateDiaryEntry(ctx context.Context, userID int64, operationI
 	}
 	id, err := s.repo.CreateDiaryEntry(ctx, tx, userID, dateISO, foodCatalogueID, foodWeight, historyJSON)
 	if err != nil {
+		_ = tx.Rollback()
+		return DiaryEntry{}, false, err
+	}
+	if err := s.recordSearchPick(ctx, tx, userID, searchQuery, foodCatalogueID); err != nil {
 		_ = tx.Rollback()
 		return DiaryEntry{}, false, err
 	}

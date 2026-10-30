@@ -90,7 +90,7 @@ func TestWriteOperationsPersistData(t *testing.T) {
 	db := openFoodTestDB(t)
 	service := NewService(NewRepository(db, sqlite.WriteDB{DB: db}), idempotency.NewStore(sqlite.WriteDB{DB: db}))
 
-	created, applied, err := service.CreateDiaryEntry(context.Background(), 1, "op-create", "2026-06-18", 1, 120, []HistoryEntry{{Action: "init", Value: 120}})
+	created, applied, err := service.CreateDiaryEntry(context.Background(), 1, "op-create", "2026-06-18", 1, 120, []HistoryEntry{{Action: "init", Value: 120}}, "")
 	if err != nil {
 		t.Fatalf("CreateDiaryEntry() error = %v", err)
 	}
@@ -378,7 +378,7 @@ func TestStatsCacheInvalidatesAfterWrites(t *testing.T) {
 	}
 	beforeKcals := beforeValue.ConsumedKcal
 
-	if _, _, err := service.CreateDiaryEntry(context.Background(), 1, "op-1", "2026-06-17", 1, 100, []HistoryEntry{{Action: "init", Value: 100}}); err != nil {
+	if _, _, err := service.CreateDiaryEntry(context.Background(), 1, "op-1", "2026-06-17", 1, 100, []HistoryEntry{{Action: "init", Value: 100}}, ""); err != nil {
 		t.Fatalf("CreateDiaryEntry() error = %v", err)
 	}
 
@@ -574,7 +574,7 @@ func TestSearchPreviewAndSaveProduct(t *testing.T) {
 	service.SetProductGenerator(fakeProductGenerator{})
 	service.SetEmbeddingGenerator(fakeEmbeddingGenerator{})
 
-	results, err := service.SearchCatalogue(context.Background(), "apple-semantic")
+	results, err := service.SearchCatalogue(context.Background(), 1, "apple-semantic")
 	if err != nil {
 		t.Fatalf("SearchCatalogue() error = %v", err)
 	}
@@ -954,6 +954,8 @@ func openFoodTestDB(t *testing.T) *sql.DB {
 		CREATE TABLE foodDiary (id INTEGER PRIMARY KEY AUTOINCREMENT, dateISO TEXT, foodCatalogueId INTEGER, foodWeight INTEGER, history TEXT, usersId INTEGER, ver INTEGER, del BOOLEAN);
 		CREATE TABLE foodBodyWeight (id INTEGER PRIMARY KEY AUTOINCREMENT, dateISO TEXT, weight NUMERIC, usersId INTEGER);
 		CREATE TABLE foodSearchQueryEmbeddings (query TEXT PRIMARY KEY, embedding BLOB, hitCount INTEGER, lastUsedAt INTEGER, createdAt INTEGER);
+		CREATE TABLE foodSearchPicks (id INTEGER PRIMARY KEY AUTOINCREMENT, usersId INTEGER NOT NULL, query TEXT NOT NULL, foodCatalogueId INTEGER NOT NULL, pickedAt INTEGER NOT NULL);
+		CREATE INDEX idxFoodSearchPicksUserQuery ON foodSearchPicks (usersId, query, foodCatalogueId, pickedAt);
 		CREATE TABLE foodPersonalKcalHistory (id INTEGER PRIMARY KEY AUTOINCREMENT, usersId INTEGER NOT NULL, foodCatalogueId INTEGER NOT NULL, yearMonth TEXT NOT NULL, kcalsPer100g REAL NOT NULL, createdAt TEXT NOT NULL, UNIQUE(usersId, foodCatalogueId, yearMonth));
 		CREATE TABLE foodPersonalNormHistory (id INTEGER PRIMARY KEY AUTOINCREMENT, usersId INTEGER NOT NULL, yearMonth TEXT NOT NULL, normKcals REAL NOT NULL, kcalPerKg REAL NOT NULL, createdAt TEXT NOT NULL, UNIQUE(usersId, yearMonth));
 		CREATE TABLE syncOperations (id TEXT PRIMARY KEY, userId INTEGER NOT NULL, createdAt TEXT NOT NULL, resultJSON TEXT NOT NULL);

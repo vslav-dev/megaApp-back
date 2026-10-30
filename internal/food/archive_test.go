@@ -119,7 +119,7 @@ func TestSearchWithoutAdminCheckerIgnoresArchivedScope(t *testing.T) {
 func TestHTTPSearchHidesArchived(t *testing.T) {
 	service, _ := newArchiveTestService(t)
 
-	results, err := service.SearchCatalogue(context.Background(), "apple-semantic")
+	results, err := service.SearchCatalogue(context.Background(), regularUserID, "apple-semantic")
 	if err != nil {
 		t.Fatalf("SearchCatalogue() error = %v", err)
 	}
@@ -128,35 +128,34 @@ func TestHTTPSearchHidesArchived(t *testing.T) {
 	}
 }
 
-func TestSearchOfOtherScopesBypassesResultsCache(t *testing.T) {
+func TestSearchScopesShareTheCachedScoresWithoutLeakingProducts(t *testing.T) {
 	for _, scope := range []SearchScope{SearchScopeArchived, SearchScopeAll} {
 		t.Run(string(scope), func(t *testing.T) {
 			service, _ := newArchiveTestService(t)
 			ctx := context.Background()
 
-			if _, _, err := service.SearchCatalogueRealtime(ctx, adminUserID, "apple-semantic", scope); err != nil {
-				t.Fatalf("%s search error = %v", scope, err)
+			if _, _, err := service.SearchCatalogueRealtime(ctx, regularUserID, "apple-semantic", SearchScopeActive); err != nil {
+				t.Fatalf("active search error = %v", err)
 			}
 			index, err := service.searchIndex.Get(ctx, service.buildSearchIndex)
 			if err != nil {
 				t.Fatalf("searchIndex.Get() error = %v", err)
 			}
-			if cached, ok := index.results.Get("apple-semantic"); ok {
-				t.Fatalf("%s search wrote the results cache: %v", scope, cached)
+			if _, ok := index.scores.Get("apple-semantic"); !ok {
+				t.Fatal("the active search did not cache the scores")
 			}
 
-			if _, _, err := service.SearchCatalogueRealtime(ctx, regularUserID, "apple-semantic", SearchScopeActive); err != nil {
-				t.Fatalf("active search error = %v", err)
-			}
 			ids, applied, err := service.SearchCatalogueRealtime(ctx, adminUserID, "apple-semantic", scope)
 			if err != nil {
 				t.Fatalf("%s search after cached active search error = %v", scope, err)
 			}
 			if applied != scope || !slices.Contains(ids, archivedItemID) {
-				t.Fatalf("%s search = %v (applied %q), want it to contain [3] (not the cached active result)", scope, ids, applied)
+				t.Fatalf("%s search = %v (applied %q), want it to contain [3] (the archived product, served from the shared scores)", scope, ids, applied)
 			}
-			if cached, _ := index.results.Get("apple-semantic"); !slices.Equal(cached, []int64{1}) {
-				t.Fatalf("cached active result = %v, want [1] untouched by %s search", cached, scope)
+
+			ids, _, err = service.SearchCatalogueRealtime(ctx, regularUserID, "apple-semantic", SearchScopeActive)
+			if err != nil || !slices.Equal(ids, []int64{1}) {
+				t.Fatalf("active search after the %s search = %v (err %v), want [1] without the archived product", scope, ids, err)
 			}
 		})
 	}
@@ -196,7 +195,7 @@ func TestCreateDiaryEntryProductChecks(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			service, db := newArchiveTestService(t)
 
-			_, applied, err := service.CreateDiaryEntry(context.Background(), regularUserID, "op-create", "2026-06-20", tt.productID, 100, []HistoryEntry{{Action: "init", Value: 100}})
+			_, applied, err := service.CreateDiaryEntry(context.Background(), regularUserID, "op-create", "2026-06-20", tt.productID, 100, []HistoryEntry{{Action: "init", Value: 100}}, "")
 			if tt.wantErr {
 				if legacy.ErrorKindOf(err) != legacy.ErrorKindValidation {
 					t.Fatalf("error = %v, want validation error", err)
@@ -218,7 +217,7 @@ func TestCreateDiaryEntryReplayAfterProductArchived(t *testing.T) {
 	ctx := context.Background()
 	history := []HistoryEntry{{Action: "init", Value: 100}}
 
-	created, applied, err := service.CreateDiaryEntry(ctx, regularUserID, "op-create", "2026-06-20", 1, 100, history)
+	created, applied, err := service.CreateDiaryEntry(ctx, regularUserID, "op-create", "2026-06-20", 1, 100, history, "")
 	if err != nil || !applied {
 		t.Fatalf("CreateDiaryEntry() = (applied=%v, err=%v), want success", applied, err)
 	}
@@ -227,7 +226,7 @@ func TestCreateDiaryEntryReplayAfterProductArchived(t *testing.T) {
 		t.Fatalf("SaveProduct() archive error = %v", err)
 	}
 
-	replayed, applied, err := service.CreateDiaryEntry(ctx, regularUserID, "op-create", "2026-06-20", 1, 100, history)
+	replayed, applied, err := service.CreateDiaryEntry(ctx, regularUserID, "op-create", "2026-06-20", 1, 100, history, "")
 	if err != nil {
 		t.Fatalf("CreateDiaryEntry() replay error = %v, want the stored result", err)
 	}

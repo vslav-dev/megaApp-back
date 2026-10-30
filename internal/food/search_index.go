@@ -52,12 +52,22 @@ type searchIndexEntry struct {
 	descVec  []float32
 }
 
-// searchIndex is an immutable snapshot of the whole catalogue (~450 products) plus the results cache of
-// its queries. Any catalogue change drops the snapshot; the next search builds a new one.
+// searchIndex is an immutable snapshot of the whole catalogue (~450 products) plus the cache of the
+// base scores of its queries. Any catalogue change drops the snapshot; the next search builds a new one.
 type searchIndex struct {
 	entries []searchIndexEntry
-	results *searchResultsCache
+	scores  *searchScoresCache
 }
+
+// baseScore is what the catalogue alone says about a product for a query, the same for every user: the
+// vector similarity plus the lift for the matched words, and whether that makes the product a candidate.
+type baseScore struct {
+	value     float64
+	candidate bool
+}
+
+// baseScores holds a baseScore per product of the snapshot, in the order of its entries.
+type baseScores []baseScore
 
 func newSearchIndex(rows []SearchIndexRow) *searchIndex {
 	entries := make([]searchIndexEntry, 0, len(rows))
@@ -71,20 +81,37 @@ func newSearchIndex(rows []SearchIndexRow) *searchIndex {
 			descVec:  decodeUnitVector(row.DescriptionVec),
 		})
 	}
-	return &searchIndex{entries: entries, results: newSearchResultsCache()}
+	return &searchIndex{entries: entries, scores: newSearchScoresCache()}
 }
 
-// search ranks the products of one scope for a query. A product is a candidate when a
-// query word starts one of its name words or its similarity to the query vector is positive; without a
-// query vector only the first kind remains. Score = similarity + wordLift × the number of query words
-// that start a name word (searchWordLift in production; a parameter so the regression can compare
-// other sizes).
-func (idx *searchIndex) search(queryWords []string, queryVec []float32, scope SearchScope, wordLift float64) []int64 {
+// score is the first stage of a search, independent of the user and of the scope. A product is a
+// candidate when a query word starts one of its name words or its similarity to the query vector is
+// positive; without a query vector only the first kind remains. Score = similarity + wordLift × the
+// number of query words that start a name word (searchWordLift in production; a parameter so the
+// regression can compare other sizes).
+func (idx *searchIndex) score(queryWords []string, queryVec []float32, wordLift float64) baseScores {
 	stems := make([]string, 0, len(queryWords))
 	for _, word := range queryWords {
 		stems = append(stems, stemSearchWord(word))
 	}
 
+	scores := make(baseScores, len(idx.entries))
+	for i := range idx.entries {
+		entry := &idx.entries[i]
+		similarity := entry.similarity(queryVec)
+		matched := entry.matchedWords(stems)
+		scores[i] = baseScore{
+			value:     similarity + wordLift*float64(matched),
+			candidate: matched > 0 || similarity > 0,
+		}
+	}
+	return scores
+}
+
+// rank is the second stage: the products of one scope, the base score plus the user's bonus, best 30.
+// A product with a bonus is a candidate even when the catalogue alone would not show it, because the
+// user chose it for this query before.
+func (idx *searchIndex) rank(scores baseScores, scope SearchScope, bonuses map[int64]float64) []int64 {
 	type scoredEntry struct {
 		entry *searchIndexEntry
 		score float64
@@ -95,12 +122,11 @@ func (idx *searchIndex) search(queryWords []string, queryVec []float32, scope Se
 		if !scope.includes(entry.archived) {
 			continue
 		}
-		similarity := entry.similarity(queryVec)
-		matched := entry.matchedWords(stems)
-		if matched == 0 && similarity <= 0 {
+		bonus := bonuses[entry.id]
+		if !scores[i].candidate && bonus <= 0 {
 			continue
 		}
-		scored = append(scored, scoredEntry{entry: entry, score: similarity + wordLift*float64(matched)})
+		scored = append(scored, scoredEntry{entry: entry, score: scores[i].value + bonus})
 	}
 
 	sort.Slice(scored, func(i int, j int) bool {

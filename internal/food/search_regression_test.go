@@ -3,10 +3,12 @@ package food
 import (
 	"context"
 	"database/sql"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"megaapp-back/internal/platform/sqlite"
@@ -152,4 +154,49 @@ func TestSearchRegressionOnProductionCopy(t *testing.T) {
 		}
 		t.Logf("%q → %s", query.text, strings.Join(top, " | "))
 	}
+}
+
+// TestSearchPersonalBonusOverridesTheVectorOnProductionCopy calibrates searchPickBoost: for every real
+// popular query one fresh choice of the product that the catalogue ranks last of the 30 shown must lift
+// it to the first place. The largest gap between the first and the last score is logged.
+func TestSearchPersonalBonusOverridesTheVectorOnProductionCopy(t *testing.T) {
+	db := openProductionCopy(t)
+	rows, err := NewRepository(db, sqlite.WriteDB{DB: db}).GetSearchIndexRows(context.Background())
+	if err != nil {
+		t.Fatalf("GetSearchIndexRows() error = %v", err)
+	}
+	queries := popularCyrillicQueries(t, db)
+	if len(queries) == 0 {
+		t.Skip("no cached query vectors in the production copy")
+	}
+	index := newSearchIndex(rows)
+	indexByID := make(map[int64]int, len(index.entries))
+	for i := range index.entries {
+		indexByID[index.entries[i].id] = i
+	}
+
+	now := time.Now()
+	maxGap := 0.0
+	checked := 0
+	for _, query := range queries {
+		if len(query.words) == 0 {
+			continue
+		}
+		scores := index.score(query.words, query.vector, searchWordLift)
+		ids := index.rank(scores, SearchScopeActive, nil)
+		if len(ids) < 2 {
+			continue
+		}
+		first, last := ids[0], ids[len(ids)-1]
+		gap := scores[indexByID[first]].value - scores[indexByID[last]].value
+		maxGap = math.Max(maxGap, gap)
+
+		pick := SearchPickRow{Query: foldSearchText(query.text), CatalogueID: last, PickedAt: now.UnixMilli()}
+		bonuses := searchPickBonuses([]SearchPickRow{pick}, pick.Query, now)
+		checked++
+		if got := index.rank(scores, SearchScopeActive, bonuses); got[0] != last {
+			t.Errorf("%q: one fresh choice of the last shown product %q did not lift it to the first place (gap %.3f, bonus %.3f)", query.text, index.entries[indexByID[last]].name, gap, bonuses[last])
+		}
+	}
+	t.Logf("%d queries checked; the largest gap between the first and the last shown product is %.3f, the bonus of one fresh choice is %.3f", checked, maxGap, searchPickBoost*0.5)
 }

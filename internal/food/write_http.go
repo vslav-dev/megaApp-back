@@ -41,6 +41,8 @@ type createDiaryEntryRequest struct {
 	FoodCatalogueID int64          `json:"foodCatalogueId"`
 	FoodWeight      int64          `json:"foodWeight"`
 	History         []HistoryEntry `json:"history"`
+	// SearchQuery is the search text the product was found by; only a create from the search sends it.
+	SearchQuery string `json:"searchQuery"`
 }
 
 type editDiaryEntryRequest struct {
@@ -104,7 +106,7 @@ func (h *WriteHandler) CreateDiaryEntry(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	entry, applied, err := h.service.CreateDiaryEntry(r.Context(), claims.UserID, request.OperationID, request.DateISO, request.FoodCatalogueID, request.FoodWeight, request.History)
+	entry, applied, err := h.service.CreateDiaryEntry(r.Context(), claims.UserID, request.OperationID, request.DateISO, request.FoodCatalogueID, request.FoodWeight, request.History, request.SearchQuery)
 	if err != nil {
 		legacy.WriteAppResultError(w, err, http.StatusInternalServerError, "Internal server error")
 		return

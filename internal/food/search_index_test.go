@@ -15,6 +15,11 @@ func vectorBlob(values ...float64) []byte {
 	return encodeFloat32Blob(values)
 }
 
+// search is both stages without a user: the base scores ranked with no bonuses.
+func (idx *searchIndex) search(queryWords []string, queryVec []float32, scope SearchScope, wordLift float64) []int64 {
+	return idx.rank(idx.score(queryWords, queryVec, wordLift), scope, nil)
+}
+
 func TestSearchWords(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -265,6 +270,78 @@ func TestSearchIndexReturnsAtMostThirtyBestProducts(t *testing.T) {
 	}
 	if got[0] != 1 || got[len(got)-1] != 30 {
 		t.Fatalf("search() = %v, want products 1..30 (the closest to the query)", got)
+	}
+}
+
+func TestSearchIndexRankAddsTheUsersBonuses(t *testing.T) {
+	queryVector := decodeUnitVector(vectorBlob(1, 0, 0))
+	rows := []SearchIndexRow{
+		indexRow(1, "Конфеты суфле", false, 1, 0, 0),
+		indexRow(2, "Конфеты шоколадные", false, 0.95, 0.31, 0),
+		indexRow(3, "Леденцы", false, 0.6, 0.8, 0),
+		indexRow(4, "Пиво", false, 0, 0, 1),
+		indexRow(5, "Леденцы старые", true, 0.6, 0.8, 0),
+	}
+	index := newSearchIndex(rows)
+	scores := index.score(searchWords("конфеты"), queryVector, searchWordLift)
+
+	tests := []struct {
+		name    string
+		bonuses map[int64]float64
+		scope   SearchScope
+		want    []int64
+	}{
+		{
+			name:    "without bonuses the vector and the word lift decide",
+			bonuses: nil,
+			scope:   SearchScopeActive,
+			want:    []int64{1, 2, 3},
+		},
+		{
+			name:    "a bonus lifts a distant product over the closer ones",
+			bonuses: map[int64]float64{3: 1.0},
+			scope:   SearchScopeActive,
+			want:    []int64{3, 1, 2},
+		},
+		{
+			name:    "bonuses order the habits by their size",
+			bonuses: map[int64]float64{2: 0.3, 3: 1.5},
+			scope:   SearchScopeActive,
+			want:    []int64{3, 2, 1},
+		},
+		{
+			name:    "a product the catalogue alone would not show comes with a bonus",
+			bonuses: map[int64]float64{4: 0.7},
+			scope:   SearchScopeActive,
+			want:    []int64{1, 2, 4, 3},
+		},
+		{
+			name:    "a bonus of an archived product does not leave the scope",
+			bonuses: map[int64]float64{5: 2.0},
+			scope:   SearchScopeActive,
+			want:    []int64{1, 2, 3},
+		},
+		{
+			name:    "the scope all ranks the bonus of an archived product",
+			bonuses: map[int64]float64{5: 2.0},
+			scope:   SearchScopeAll,
+			want:    []int64{5, 1, 2, 3},
+		},
+		{
+			name:    "a zero bonus does not make a candidate",
+			bonuses: map[int64]float64{4: 0},
+			scope:   SearchScopeActive,
+			want:    []int64{1, 2, 3},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := index.rank(scores, tt.scope, tt.bonuses)
+
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("rank() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -51,13 +51,19 @@ func RegisterCatalogueRoutes(router chi.Router, authService *auth.Service, handl
 }
 
 func (h *CatalogueHandler) SearchCatalogue(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.UserClaimsFromContext(r.Context())
+	if !ok {
+		legacy.WriteMessage(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
 	query := strings.TrimSpace(r.URL.Query().Get("query"))
 	if query == "" {
 		legacy.WriteResultError(w, http.StatusBadRequest, "Query parameter is required")
 		return
 	}
 
-	response, err := h.service.SearchCatalogue(r.Context(), query)
+	response, err := h.service.SearchCatalogue(r.Context(), claims.UserID, query)
 	if err != nil {
 		legacy.WriteAppResultError(w, err, http.StatusInternalServerError, "Internal server error")
 		return

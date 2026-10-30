@@ -940,6 +940,9 @@ components:
         foodCatalogueId: { type: integer, format: int64 }
         foodWeight: { type: integer, format: int64 }
         history: { type: array, items: { $ref: '#/components/schemas/HistoryEntry' } }
+        searchQuery:
+          type: string
+          description: The search text the product was found by. Teaches the search which product the user picks for it; ignored when empty, and ignored when restoring a day.
     MoneySnapshot:
       type: object
       properties:

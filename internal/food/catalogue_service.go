@@ -23,8 +23,8 @@ type ProductPreviewData struct {
 	Confidence      float64 `json:"confidence"`
 }
 
-func (s *Service) SearchCatalogue(ctx context.Context, query string) ([]CatalogueEntry, error) {
-	ids, err := s.searchCatalogueIDs(ctx, query, SearchScopeActive)
+func (s *Service) SearchCatalogue(ctx context.Context, userID int64, query string) ([]CatalogueEntry, error) {
+	ids, err := s.searchCatalogueIDs(ctx, userID, query, SearchScopeActive)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +68,7 @@ func (s *Service) SearchCatalogueRealtime(ctx context.Context, userID int64, que
 	default:
 		scope = SearchScopeActive
 	}
-	ids, err := s.searchCatalogueIDs(ctx, query, scope)
+	ids, err := s.searchCatalogueIDs(ctx, userID, query, scope)
 	if err != nil {
 		return nil, "", err
 	}
@@ -357,10 +357,10 @@ func (s *Service) catalogueChanged() {
 	s.searchIndex.Invalidate()
 }
 
-// searchCatalogueIDs ranks the products of one scope. The results cache serves the active scope
-// only — searches of the other scopes are rare, so they neither read nor write it.
-func (s *Service) searchCatalogueIDs(ctx context.Context, query string, scope SearchScope) ([]int64, error) {
-	normalizedQuery := normalizeSearchText(query)
+// searchCatalogueIDs ranks the products of one scope for one user: the catalogue's base scores of the
+// query (cached, shared by everyone and every scope) plus the bonuses from the user's earlier choices.
+func (s *Service) searchCatalogueIDs(ctx context.Context, userID int64, query string, scope SearchScope) ([]int64, error) {
+	normalizedQuery := clipSearchQuery(normalizeSearchText(query))
 	if normalizedQuery == "" {
 		return []int64{}, nil
 	}
@@ -369,16 +369,28 @@ func (s *Service) searchCatalogueIDs(ctx context.Context, query string, scope Se
 	if err != nil {
 		return nil, err
 	}
-	cacheable := scope == SearchScopeActive
-	if cacheable {
-		if cached, ok := index.results.Get(normalizedQuery); ok {
-			return cached, nil
-		}
+	scores, err := s.baseScores(ctx, index, normalizedQuery)
+	if err != nil {
+		return nil, err
 	}
 
-	// A vector that cannot be obtained (OpenAI down) is not an error for the user: the products whose
-	// name starts with a query word are still found. A result built without the vector is not cached,
-	// so the next search of the query tries the vector again. A database failure is an error.
+	bonuses, err := s.personalBonuses(ctx, userID, normalizedQuery)
+	if err != nil {
+		return nil, err
+	}
+	return index.rank(scores, scope, bonuses), nil
+}
+
+// baseScores is the part of a search that is the same for every user: served from the snapshot's cache,
+// or computed from the query vector and cached. A vector that cannot be obtained (OpenAI down) is not an
+// error for the user: the products whose name starts with a query word are still found. Scores built
+// without the vector are not cached, so the next search of the query tries the vector again. A database
+// failure is an error.
+func (s *Service) baseScores(ctx context.Context, index *searchIndex, normalizedQuery string) (baseScores, error) {
+	if cached, ok := index.scores.Get(normalizedQuery); ok {
+		return cached, nil
+	}
+
 	queryVector, err := s.queryVector(ctx, normalizedQuery)
 	switch {
 	case errors.Is(err, errQueryVectorUnavailable):
@@ -387,11 +399,11 @@ func (s *Service) searchCatalogueIDs(ctx context.Context, query string, scope Se
 		return nil, err
 	}
 
-	ids := index.search(searchWords(normalizedQuery), queryVector, scope, searchWordLift)
-	if cacheable && queryVector != nil {
-		index.results.Set(normalizedQuery, ids)
+	scores := index.score(searchWords(normalizedQuery), queryVector, searchWordLift)
+	if queryVector != nil {
+		index.scores.Set(normalizedQuery, scores)
 	}
-	return ids, nil
+	return scores, nil
 }
 
 // errQueryVectorUnavailable marks a query vector that could not be produced by the embedding generator.
@@ -491,4 +503,19 @@ func utfLen(value string) int {
 func normalizeSearchText(value string) string {
 	fields := strings.Fields(strings.ToLower(strings.TrimSpace(value)))
 	return strings.Join(fields, " ")
+}
+
+// searchQueryMaxRunes is how much of a query the search reads: a food query is a few words, so whatever
+// comes after the first 100 characters is dropped, before it reaches the embedding, the caches or the
+// user's choices.
+const searchQueryMaxRunes = 100
+
+// clipSearchQuery cuts an already normalized query to searchQueryMaxRunes, at a character boundary and
+// without a space left at the end.
+func clipSearchQuery(normalized string) string {
+	runes := []rune(normalized)
+	if len(runes) <= searchQueryMaxRunes {
+		return normalized
+	}
+	return strings.TrimSpace(string(runes[:searchQueryMaxRunes]))
 }

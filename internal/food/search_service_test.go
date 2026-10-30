@@ -55,7 +55,7 @@ func saveSearchProduct(t *testing.T, service *Service, operationID string, name 
 func searchNames(t *testing.T, service *Service, query string) []string {
 	t.Helper()
 
-	entries, err := service.SearchCatalogue(context.Background(), query)
+	entries, err := service.SearchCatalogue(context.Background(), 1, query)
 	if err != nil {
 		t.Fatalf("SearchCatalogue(%q) error = %v", query, err)
 	}
@@ -194,7 +194,7 @@ func TestSearchReturnsADatabaseErrorOfTheVectorCache(t *testing.T) {
 		t.Fatalf("Exec() error = %v", err)
 	}
 
-	if _, err := service.SearchCatalogue(context.Background(), "моло"); err == nil {
+	if _, err := service.SearchCatalogue(context.Background(), 1, "моло"); err == nil {
 		t.Fatal("SearchCatalogue() error = nil, want the failed read of the vector cache to be reported, not hidden as a name-only result")
 	}
 }
@@ -211,7 +211,7 @@ func TestSearchDoesNotCacheTheResultWithoutAnEmbeddingGenerator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("searchIndex.Get() error = %v", err)
 	}
-	if _, cached := index.results.Get("моло"); cached {
+	if _, cached := index.scores.Get("моло"); cached {
 		t.Fatal("the result built without a query vector is cached, want it recomputed on the next search")
 	}
 }
@@ -289,7 +289,7 @@ func TestSearchSeesEveryCatalogueChange(t *testing.T) {
 func searchEntryID(t *testing.T, service *Service, query string) int64 {
 	t.Helper()
 
-	entries, err := service.SearchCatalogue(context.Background(), query)
+	entries, err := service.SearchCatalogue(context.Background(), 1, query)
 	if err != nil || len(entries) == 0 {
 		t.Fatalf("SearchCatalogue(%q) = %v, error = %v, want a result", query, entries, err)
 	}
