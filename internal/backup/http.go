@@ -3,7 +3,6 @@ package backup
 import (
 	"context"
 	"crypto/rand"
-	"io"
 	"log/slog"
 	"net/http"
 
@@ -19,7 +18,7 @@ type DebugHandler struct {
 
 func NewDebugHandler(service *Service, logger *slog.Logger) *DebugHandler {
 	if logger == nil {
-		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+		logger = slog.New(slog.DiscardHandler)
 	}
 	return &DebugHandler{service: service, logger: logger}
 }

@@ -235,7 +235,7 @@ func readTotalCPUTicks() (float64, error) {
 }
 
 func parseTotalCPUTicks(raw string) (float64, error) {
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.SplitSeq(raw, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 0 || fields[0] != "cpu" {
 			continue
@@ -293,7 +293,7 @@ func readProcessRSSBytes() (float64, error) {
 }
 
 func parseProcessRSSBytes(raw string) (float64, error) {
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.SplitSeq(raw, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 || fields[0] != "VmRSS:" {
 			continue

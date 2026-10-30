@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"maps"
 	"sync"
 
 	"megaapp-back/internal/metrics/wire"
@@ -148,8 +149,6 @@ func (r *Realtime) subscriberSnapshot() map[*ws.Client]map[scopeKey]struct{} {
 	defer r.mu.Unlock()
 
 	snapshot := make(map[*ws.Client]map[scopeKey]struct{}, len(r.subscribers))
-	for client, scope := range r.subscribers {
-		snapshot[client] = scope
-	}
+	maps.Copy(snapshot, r.subscribers)
 	return snapshot
 }

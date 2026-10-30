@@ -2,7 +2,6 @@ package httpx
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +14,7 @@ func newSwaggerTestApp(t *testing.T) *App {
 	cfg := appTestConfig(t.TempDir())
 	prepareAppTestFiles(t, cfg)
 
-	app, err := NewApp(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	app, err := NewApp(context.Background(), cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)
 	}

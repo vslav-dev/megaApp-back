@@ -146,3 +146,52 @@
 
 - ✅ Правило «проверки после изменений» для `megaapp-back` в `AGENTS.md` и в глобальных инструкциях (Claude и Codex)
 - ✅ Линтер в деплой не добавлять
+
+## Часть блока 2 включена (30.10.2026)
+
+Прогон всего блока 2 на коде: 1412 замечаний (revive 666, wrapcheck 287, govet `shadow` 94, gosec 91, perfsprint 73, modernize 59, forcetypeassert 36, unparam 26, contextcheck 18, sloglint 18, nilnil 17, intrange 10, exhaustive 5, gocritic 5, errchkjson 4, prealloc 3; нули: unconvert, usestdlibvars, thelper, tparallel, testifylint, copyloopvar). `gosec` проверен вручную: реальных проблем нет (SQL-срабатывания — ложные, плейсхолдеры строятся из длины; cookie и `math/rand` — осознанно).
+
+Включено: `modernize`, `intrange`, `sloglint`, `gocritic`, `forcetypeassert`, `unparam`. `forcetypeassert` и `unparam` исключены для `_test.go` (тест просто упадёт, тестовые хелперы принимают константы). Не включено: `exhaustive` (5 мест, не выбрано), шесть линтеров с нулём срабатываний (можно включить бесплатно), `revive`, `wrapcheck`, `govet shadow`, `perfsprint`, `nilnil`, `errchkjson`, `prealloc`, `contextcheck`, `gosec`.
+
+Правки (42 файла): `slog.DiscardHandler`; `maps.Copy`, `slices.Sort`/`Contains`, `strings.SplitSeq`, `errors.AsType`, `sync.WaitGroup.Go`, встроенные `min`/`max` (собственные `min`/`max` в `food/service.go` удалены), `new(expr)` вместо тестовых помощников `boolPtr`/`int64Ptr`/`stringPtr`/`float64Ptr`, `for range n`, `reflect.Type.Fields()`. `unparam`: у `parseIDParam` убран параметр имени, у `writeSuccessMessage` — статус, у `parseISODateParts` — неиспользуемый результат дня. `gocritic`: `if-else` → `switch` в `money/service.go`, `switch` с одним case → `if` в `money/repo.go`, `os.Exit` после `defer` в `cmd/server/main.go` убран выносом тела в `run() int`. `forcetypeassert`: значение альфа-канала берётся через `RGBA()` вместо приведения типа.
+
+Итог: `golangci-lint run` 0 замечаний (с тегом `swagger` и без), сборка и тесты (оба варианта) зелёные.
+
+- ✅ Включены `modernize`, `intrange`, `sloglint`, `gocritic`, `forcetypeassert`, `unparam`, все замечания исправлены
+- ✅ Решение по `exhaustive` и шести линтерам с нулём срабатываний (см. раздел «Итог по блоку 3» ниже)
+
+## Замер кандидатов блока 3 (30.10.2026)
+
+Замер без включения (временный конфиг), цель — простота, производительность, расширяемость, архитектура.
+
+- `gocognit` (порог 15): 27 в проде. Порог 30 — 6 функций (`Config.Validate` 75, `SaveProduct` 55, `processUserPersonalKcal` 50, `Config.Load` 39, `UpdateTransaction` 32, `buildStatsSummary` 30), порог 40 — 3. `Config.Validate` — плоский список проверок, высокая оценка при низкой реальной сложности.
+- `nestif`: 7 в проде, из них 27 (`SaveProduct`) и 12 (`food/service.go:580`) — настоящие очаги.
+- `dupl` (порог 100): 17 в проде, все в `money/http.go` (пять почти одинаковых блоков CRUD по 47 строк), `money/service.go`, `money/repo.go`, `food/image_store.go`, `food/personal_kcal_repo.go`. Кандидат на отдельный рефакторинг, не на постоянный гейт.
+- `gocritic` (performance): `hugeParam` 55 (80–832 байта, медиана 128), `rangeValCopy` 8. На скорость сервиса влияния нет, правка меняет API на указатели. Не нужен.
+- `exhaustive`: все 5 `switch` с `default`, то есть пользы нет (новый элемент enum не пропустится только без `default`). Не включать.
+- `gofumpt`: 63 файла переформатируется, пользы для кода нет. Не нужен. `misspell`: 0 срабатываний.
+- `deadcode` от `main`: `PersonalKcalResolver.AppliedX` и `App.SQLDB` нигде не вызываются, `App.Serve` — только в тестах. Проект чист.
+- Граф импортов: пакеты функциональностей не импортируют друг друга (допустимы `auth`, `ws`, `platform/*`, `httpx/legacy`), `httpx` собирает всё. Нарушений нет, поэтому `depguard` с правилами изоляции сейчас даст 0 срабатываний и станет страховкой. Замечание: все функциональные пакеты зависят от `httpx/legacy` (общие HTTP-хелперы живут внутри корня композиции).
+
+## Итог по блоку 3 (30.10.2026)
+
+Включено: `depguard`, `misspell` и пять линтеров с нулём срабатываний (`unconvert`, `usestdlibvars`, `thelper`, `tparallel`, `copyloopvar`). `testifylint` не включён: `testify` в проекте нет. Удалены две мёртвые функции (`PersonalKcalResolver.AppliedX`, `App.SQLDB`).
+
+Правила `depguard` (в сборке без нарушений, роль — страховка от будущих правок):
+- пакеты функциональностей (`backup`, `food`, `ingest`, `metrics`, `money`, `quotes`, `settings`) не импортируют друг друга; общаются через `auth`, `ws`, `platform/*`, `httpx/legacy`, собирает всё `httpx`;
+- общие слои (`auth`, `ws`, `config`, `jobs`, `httpx/legacy`, `platform/*`) не импортируют функциональности;
+- `platform/*` — нижний слой, не импортирует `auth`, `ws`, `httpx`.
+Совпадение пакетов идёт по префиксу, поэтому `metrics` (у него есть подпакет `wire`) вынесен в отдельное правило. Тестовые файлы из правил исключены. Работоспособность правил проверена пробным запрещающим конфигом (срабатывает на существующие импорты).
+
+Сознательно отложено на неопределённый срок (решение пользователя):
+- `gocognit` (порог 40) и `nestif` (порог 10) вместе с рефакторингом самых сложных функций: `SaveProduct`, `processUserPersonalKcal`, `Config.Validate`, блок в `food/service.go:580`. Возвращаться только по отдельному решению, с отдельным планом.
+- Вынос повторяющегося CRUD в `money` (пять блоков в `money/http.go` и повторы в `money/service.go`, `money/repo.go`, найденные `dupl`) в общий хелпер.
+- Вынос `httpx/legacy` из корня композиции в нейтральный пакет.
+
+Сознательно не включаются: `exhaustive`, `gocritic` (performance), `gofumpt`, `dupl` как постоянный гейт.
+
+Итог: `golangci-lint run` — 0 замечаний (с тегом `swagger` и без), сборка и тесты зелёные.
+
+- ✅ Включены `depguard`, `misspell`, `unconvert`, `usestdlibvars`, `thelper`, `tparallel`, `copyloopvar`
+- ✅ Удалены мёртвые функции `AppliedX`, `SQLDB`
+- ⭕ Отложено на неопределённый срок: `gocognit` + `nestif` с рефакторингом, вынос CRUD в `money`, вынос `httpx/legacy`

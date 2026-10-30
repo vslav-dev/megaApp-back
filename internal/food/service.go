@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"sort"
 	"sync"
@@ -330,9 +331,7 @@ func (s *Service) GetDiaryFullUpdate(ctx context.Context, userID int64, dateISO 
 	}
 
 	catalogueMap := make(map[int64]CatalogueEntry, len(catalogue))
-	for id, entry := range catalogue {
-		catalogueMap[id] = entry
-	}
+	maps.Copy(catalogueMap, catalogue)
 
 	for _, row := range diaryRows {
 		day, ok := result[row.DateISO]
@@ -1280,10 +1279,10 @@ func prepareWeights(rows []WeightRow, allDates []string) map[string]float64 {
 		return weights
 	}
 
-	for idx := 0; idx < points[0].Index; idx++ {
+	for idx := range points[0].Index {
 		weights[allDates[idx]] = points[0].Value
 	}
-	for pointIdx := 0; pointIdx < len(points)-1; pointIdx++ {
+	for pointIdx := range len(points) - 1 {
 		left := points[pointIdx]
 		right := points[pointIdx+1]
 		weights[allDates[left.Index]] = left.Value
@@ -1393,18 +1392,4 @@ func sum(values []float64) float64 {
 func roundFloat(value float64, places int) float64 {
 	multiplier := math.Pow(10, float64(places))
 	return math.Round(value*multiplier) / multiplier
-}
-
-func min(a int, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func max(a int, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

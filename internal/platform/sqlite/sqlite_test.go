@@ -74,13 +74,11 @@ func TestCloseTruncatesWALWithLiveReadPoolConnections(t *testing.T) {
 	// QueryRowContext loop could keep reusing one idle connection) so Close() has real,
 	// idle-but-open connections to reckon with, not just a theoretical pool.
 	var wg sync.WaitGroup
-	for i := 0; i < readPoolSize; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range readPoolSize {
+		wg.Go(func() {
 			var count int
 			_ = db.Read().QueryRowContext(context.Background(), `SELECT COUNT(*) FROM sample`).Scan(&count)
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -157,10 +155,8 @@ func TestReadPoolConnectionsAllEnforceForeignKeys(t *testing.T) {
 	// every one of them individually applied the DSN's foreign_keys pragma on connection open.
 	var wg sync.WaitGroup
 	errs := make([]error, readPoolSize)
-	for i := 0; i < readPoolSize; i++ {
-		wg.Add(1)
-		go func(index int) {
-			defer wg.Done()
+	for index := range readPoolSize {
+		wg.Go(func() {
 			tx, err := db.Read().BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
 			if err != nil {
 				errs[index] = err
@@ -176,7 +172,7 @@ func TestReadPoolConnectionsAllEnforceForeignKeys(t *testing.T) {
 			if enabled != 1 {
 				errs[index] = fmt.Errorf("foreign_keys = %d, want 1", enabled)
 			}
-		}(i)
+		})
 	}
 	wg.Wait()
 

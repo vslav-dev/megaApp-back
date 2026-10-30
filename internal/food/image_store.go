@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -244,7 +244,7 @@ func (s *ImageStore) CatalogueIDsWithOriginals() ([]int64, error) {
 	for id := range idsMap {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i int, j int) bool { return ids[i] < ids[j] })
+	slices.Sort(ids)
 	return ids, nil
 }
 

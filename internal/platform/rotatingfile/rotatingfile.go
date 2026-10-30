@@ -162,13 +162,11 @@ func (w *Writer) nextOpenedAt(previous string) string {
 }
 
 func (w *Writer) archiveAsync(closedPath string) {
-	w.archiving.Add(1)
-	go func() {
-		defer w.archiving.Done()
+	w.archiving.Go(func() {
 		if err := archive(closedPath); err != nil {
 			slog.Error("ingest_archive_failed", "path", closedPath, "err", err)
 		}
-	}()
+	})
 }
 
 func archive(closedPath string) error {

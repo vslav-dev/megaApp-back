@@ -2,7 +2,6 @@ package httpx
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"log/slog"
 	"net"
@@ -227,8 +226,4 @@ func (a *App) Shutdown(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
-}
-
-func (a *App) SQLDB() *sql.DB {
-	return a.DB.SQL()
 }

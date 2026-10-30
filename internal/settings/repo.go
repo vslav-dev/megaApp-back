@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"megaapp-back/internal/platform/sqlite"
@@ -66,9 +67,7 @@ func (r *Repository) MergeFields(ctx context.Context, tx *sql.Tx, userID int64, 
 			return "", 0, fmt.Errorf("unmarshal stored settings namespace: %w", err)
 		}
 	}
-	for key, value := range fields {
-		merged[key] = value
-	}
+	maps.Copy(merged, fields)
 
 	mergedJSON, err := json.Marshal(merged)
 	if err != nil {

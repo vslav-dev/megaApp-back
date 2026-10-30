@@ -1,6 +1,7 @@
 package food
 
 import (
+	"maps"
 	"sync"
 	"time"
 )
@@ -67,8 +68,6 @@ func (c *CatalogueCache) Version() int64 {
 
 func cloneCatalogueEntries(input map[int64]CatalogueEntry) map[int64]CatalogueEntry {
 	result := make(map[int64]CatalogueEntry, len(input))
-	for id, entry := range input {
-		result[id] = entry
-	}
+	maps.Copy(result, input)
 	return result
 }

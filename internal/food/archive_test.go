@@ -31,10 +31,6 @@ func (f fakeAdminChecker) IsAdmin(_ context.Context, userID int64) (bool, error)
 	return f[userID], nil
 }
 
-func boolPtr(value bool) *bool {
-	return &value
-}
-
 // newArchiveTestService seeds one archived product (id 3, "Old apple") next to the fixture's
 // Apple (1) and Bread (2); user 2 is the only admin.
 func newArchiveTestService(t *testing.T) (*Service, *sql.DB) {
@@ -222,7 +218,7 @@ func TestCreateDiaryEntryReplayAfterProductArchived(t *testing.T) {
 		t.Fatalf("CreateDiaryEntry() = (applied=%v, err=%v), want success", applied, err)
 	}
 	productID := int64(1)
-	if _, _, err := service.SaveProduct(ctx, adminUserID, "op-archive", &productID, appleInput(boolPtr(true))); err != nil {
+	if _, _, err := service.SaveProduct(ctx, adminUserID, "op-archive", &productID, appleInput(new(true))); err != nil {
 		t.Fatalf("SaveProduct() archive error = %v", err)
 	}
 
@@ -273,18 +269,18 @@ func TestSaveProductArchiveFlag(t *testing.T) {
 	ctx := context.Background()
 	productID := int64(1)
 
-	archive, applied, err := service.SaveProduct(ctx, adminUserID, "op-archive", &productID, appleInput(boolPtr(true)))
+	archive, applied, err := service.SaveProduct(ctx, adminUserID, "op-archive", &productID, appleInput(new(true)))
 	if err != nil || !applied || !archive.Archived {
 		t.Fatalf("admin archive = (%+v, applied=%v, err=%v), want archived", archive, applied, err)
 	}
 
 	for _, flag := range []bool{true, false} {
-		_, applied, err := service.SaveProduct(ctx, regularUserID, "op-denied", &productID, appleInput(boolPtr(flag)))
+		_, applied, err := service.SaveProduct(ctx, regularUserID, "op-denied", &productID, appleInput(new(flag)))
 		if legacy.ErrorKindOf(err) != legacy.ErrorKindForbidden || applied {
 			t.Fatalf("non-admin with archived=%v: err = %v, applied = %v, want forbidden", flag, err, applied)
 		}
 	}
-	if _, _, err := service.SaveProduct(ctx, regularUserID, "op-archive", &productID, appleInput(boolPtr(true))); legacy.ErrorKindOf(err) != legacy.ErrorKindForbidden {
+	if _, _, err := service.SaveProduct(ctx, regularUserID, "op-archive", &productID, appleInput(new(true))); legacy.ErrorKindOf(err) != legacy.ErrorKindForbidden {
 		t.Fatalf("non-admin replay of an applied operation: err = %v, want forbidden before the idempotency check", err)
 	}
 
@@ -298,7 +294,7 @@ func TestSaveProductArchiveFlag(t *testing.T) {
 		t.Fatalf("edited = %+v, want description changed and archive flag untouched", edited)
 	}
 
-	restored, _, err := service.SaveProduct(ctx, adminUserID, "op-unarchive", &productID, appleInput(boolPtr(false)))
+	restored, _, err := service.SaveProduct(ctx, adminUserID, "op-unarchive", &productID, appleInput(new(false)))
 	if err != nil || restored.Archived {
 		t.Fatalf("admin unarchive = (%+v, err=%v), want not archived", restored, err)
 	}
@@ -318,7 +314,7 @@ func TestSaveProductBumpsCatalogueVersion(t *testing.T) {
 	productID := int64(1)
 	before := service.CatalogueVersion()
 
-	if _, _, err := service.SaveProduct(context.Background(), adminUserID, "op-archive", &productID, appleInput(boolPtr(true))); err != nil {
+	if _, _, err := service.SaveProduct(context.Background(), adminUserID, "op-archive", &productID, appleInput(new(true))); err != nil {
 		t.Fatalf("SaveProduct() error = %v", err)
 	}
 	if after := service.CatalogueVersion(); after != before+1 {

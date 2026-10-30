@@ -51,7 +51,7 @@ func NewService(db sqlite.WriteDB, cfg Config, clk platformclock.Clock, logger *
 		clk = platformclock.NewRealClock()
 	}
 	if logger == nil {
-		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+		logger = slog.New(slog.DiscardHandler)
 	}
 	return &Service{db: db, cfg: cfg, clock: clk, logger: logger, uploader: uploader}
 }

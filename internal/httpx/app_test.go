@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,7 +25,7 @@ func TestAppWebSocketUpgradeWorksThroughMiddleware(t *testing.T) {
 
 	prepareAppTestFiles(t, cfg)
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	app, err := NewApp(context.Background(), cfg, logger)
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)
@@ -103,7 +102,7 @@ func TestAppServeAndShutdown(t *testing.T) {
 
 	prepareAppTestFiles(t, cfg)
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	app, err := NewApp(context.Background(), cfg, logger)
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)
@@ -141,7 +140,7 @@ func TestAppRejectsOversizedRequestBody(t *testing.T) {
 
 	prepareAppTestFiles(t, cfg)
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	app, err := NewApp(context.Background(), cfg, logger)
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)
@@ -172,7 +171,7 @@ func TestAppServesTheConfiguredIngestSourcesOnly(t *testing.T) {
 
 	prepareAppTestFiles(t, cfg)
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	app, err := NewApp(context.Background(), cfg, logger)
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)

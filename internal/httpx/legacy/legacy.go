@@ -54,8 +54,7 @@ func WrapError(kind ErrorKind, message string, cause error) error {
 }
 
 func ErrorKindOf(err error) ErrorKind {
-	var appErr *AppError
-	if errors.As(err, &appErr) {
+	if appErr, ok := errors.AsType[*AppError](err); ok {
 		return appErr.Kind
 	}
 	return ""
@@ -164,8 +163,7 @@ func WriteAppResultError(w http.ResponseWriter, err error, fallbackStatus int, f
 func DecodeJSON(r *http.Request, dst any) error {
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(dst); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			return NewError(ErrorKindRequestTooLarge, "Request body is too large")
 		}
 		return WrapError(ErrorKindValidation, "Invalid request body", err)

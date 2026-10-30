@@ -146,7 +146,7 @@ func TestServiceCategoryValidationAndDeleteGuards(t *testing.T) {
 	insertMoneyReferenceFixtures(t, db, 1)
 	service := NewService(NewRepository(db, sqlite.WriteDB{DB: db}), idempotency.NewStore(sqlite.WriteDB{DB: db}))
 
-	_, err := service.CreateCategory(context.Background(), 1, CategoryInput{Name: "Bonus", CategoryType: CategoryTypeIncome, ParentID: int64Ptr(2)})
+	_, err := service.CreateCategory(context.Background(), 1, CategoryInput{Name: "Bonus", CategoryType: CategoryTypeIncome, ParentID: new(int64(2))})
 	assertMoneyValidationError(t, err, "Parent category type must match categoryType")
 
 	err = service.DeleteCategory(context.Background(), 1, 1)
@@ -162,7 +162,7 @@ func TestServiceCategoryValidationAndDeleteGuards(t *testing.T) {
 	err = service.UpdateCategory(context.Background(), 1, 2, CategoryInput{Name: "Groceries", CategoryType: CategoryTypeIncome})
 	assertMoneyConflictError(t, err, "Category type cannot change while transactions use the category")
 
-	if err := service.UpdateCategory(context.Background(), 1, 2, CategoryInput{Name: "Groceries", CategoryType: CategoryTypeExpense, ParentID: int64Ptr(1), HiddenOnCharts: true}); err != nil {
+	if err := service.UpdateCategory(context.Background(), 1, 2, CategoryInput{Name: "Groceries", CategoryType: CategoryTypeExpense, ParentID: new(int64(1)), HiddenOnCharts: true}); err != nil {
 		t.Fatalf("UpdateCategory() with unchanged type error = %v", err)
 	}
 
@@ -185,7 +185,7 @@ func TestServiceCategoryChartFieldsRoundTrip(t *testing.T) {
 		Name:           "Tax",
 		CategoryType:   CategoryTypeExpense,
 		HiddenOnCharts: true,
-		Hue:            int64Ptr(300),
+		Hue:            new(int64(300)),
 	})
 	if err != nil {
 		t.Fatalf("CreateCategory() error = %v", err)
@@ -212,14 +212,14 @@ func TestServiceCategoryChartFieldsRoundTrip(t *testing.T) {
 		t.Fatalf("plain category defaults = %+v", plain)
 	}
 
-	if err := service.UpdateCategory(ctx, 1, id, CategoryInput{Name: "Tax", CategoryType: CategoryTypeExpense, Hue: int64Ptr(0)}); err != nil {
+	if err := service.UpdateCategory(ctx, 1, id, CategoryInput{Name: "Tax", CategoryType: CategoryTypeExpense, Hue: new(int64(0))}); err != nil {
 		t.Fatalf("UpdateCategory() hue 0 error = %v", err)
 	}
 	updated, err := service.repo.GetCategoryByID(ctx, 1, id)
 	if err != nil || updated == nil || updated.HiddenOnCharts || updated.Hue == nil || *updated.Hue != 0 {
 		t.Fatalf("updated category = %+v, err = %v", updated, err)
 	}
-	if err := service.UpdateCategory(ctx, 1, id, CategoryInput{Name: "Tax", CategoryType: CategoryTypeExpense, Hue: int64Ptr(360)}); err != nil {
+	if err := service.UpdateCategory(ctx, 1, id, CategoryInput{Name: "Tax", CategoryType: CategoryTypeExpense, Hue: new(int64(360))}); err != nil {
 		t.Fatalf("UpdateCategory() hue 360 error = %v", err)
 	}
 	if err := service.UpdateCategory(ctx, 1, id, CategoryInput{Name: "Tax", CategoryType: CategoryTypeExpense}); err != nil {
@@ -240,9 +240,9 @@ func TestServiceCategoryLightnessAndSaturationRoundTripAndValidation(t *testing.
 	id, err := service.CreateCategory(ctx, 1, CategoryInput{
 		Name:         "Food",
 		CategoryType: CategoryTypeExpense,
-		Hue:          int64Ptr(200),
-		Lightness:    int64Ptr(55),
-		Saturation:   int64Ptr(80),
+		Hue:          new(int64(200)),
+		Lightness:    new(int64(55)),
+		Saturation:   new(int64(80)),
 	})
 	if err != nil {
 		t.Fatalf("CreateCategory() error = %v", err)
@@ -252,7 +252,7 @@ func TestServiceCategoryLightnessAndSaturationRoundTripAndValidation(t *testing.
 		t.Fatalf("created category = %+v, err = %v", created, err)
 	}
 
-	if err := service.UpdateCategory(ctx, 1, id, CategoryInput{Name: "Food", CategoryType: CategoryTypeExpense, Lightness: int64Ptr(20), Saturation: int64Ptr(100)}); err != nil {
+	if err := service.UpdateCategory(ctx, 1, id, CategoryInput{Name: "Food", CategoryType: CategoryTypeExpense, Lightness: new(int64(20)), Saturation: new(int64(100))}); err != nil {
 		t.Fatalf("UpdateCategory() bounds error = %v", err)
 	}
 	if err := service.UpdateCategory(ctx, 1, id, CategoryInput{Name: "Food", CategoryType: CategoryTypeExpense}); err != nil {
@@ -263,15 +263,15 @@ func TestServiceCategoryLightnessAndSaturationRoundTripAndValidation(t *testing.
 		t.Fatalf("cleared category = %+v, want nil lightness and saturation", cleared)
 	}
 
-	if err := service.UpdateCategory(ctx, 1, id, CategoryInput{Name: "Food", CategoryType: CategoryTypeExpense, Lightness: int64Ptr(95), Saturation: int64Ptr(0)}); err != nil {
+	if err := service.UpdateCategory(ctx, 1, id, CategoryInput{Name: "Food", CategoryType: CategoryTypeExpense, Lightness: new(int64(95)), Saturation: new(int64(0))}); err != nil {
 		t.Fatalf("UpdateCategory() upper bound error = %v", err)
 	}
 	for _, value := range []int64{-1, 19, 96, 101} {
-		_, err := service.CreateCategory(ctx, 1, CategoryInput{Name: "A", CategoryType: CategoryTypeExpense, Lightness: int64Ptr(value)})
+		_, err := service.CreateCategory(ctx, 1, CategoryInput{Name: "A", CategoryType: CategoryTypeExpense, Lightness: new(value)})
 		assertMoneyValidationError(t, err, "lightness must be between 20 and 95")
 	}
 	for _, value := range []int64{-1, 101} {
-		_, err := service.CreateCategory(ctx, 1, CategoryInput{Name: "B", CategoryType: CategoryTypeExpense, Saturation: int64Ptr(value)})
+		_, err := service.CreateCategory(ctx, 1, CategoryInput{Name: "B", CategoryType: CategoryTypeExpense, Saturation: new(value)})
 		assertMoneyValidationError(t, err, "saturation must be between 0 and 100")
 	}
 }
@@ -282,7 +282,7 @@ func TestServiceCategoryHueValidation(t *testing.T) {
 	service := NewService(NewRepository(db, sqlite.WriteDB{DB: db}), idempotency.NewStore(sqlite.WriteDB{DB: db}))
 
 	for _, hue := range []int64{-1, 361} {
-		_, err := service.CreateCategory(context.Background(), 1, CategoryInput{Name: "Food", CategoryType: CategoryTypeExpense, Hue: int64Ptr(hue)})
+		_, err := service.CreateCategory(context.Background(), 1, CategoryInput{Name: "Food", CategoryType: CategoryTypeExpense, Hue: new(hue)})
 		assertMoneyValidationError(t, err, "hue must be between 0 and 360")
 	}
 }
@@ -326,8 +326,8 @@ func TestServiceCreateAssetNormalizesAccountsAndSuspension(t *testing.T) {
 		Ticker:         " AAPL ",
 		Type:           AssetTypeStock,
 		AccountIDs:     []int64{2, 2},
-		SuspendedSince: stringPtr("2026-06-01"),
-		SuspendedUntil: stringPtr("2026-06-30"),
+		SuspendedSince: new("2026-06-01"),
+		SuspendedUntil: new("2026-06-30"),
 	})
 	if err != nil {
 		t.Fatalf("CreateAsset() error = %v", err)
@@ -362,7 +362,7 @@ func TestServiceAssetValidationAndGuards(t *testing.T) {
 	_, err := service.CreateAsset(context.Background(), 1, AssetInput{Title: "Asset", Ticker: "AAA", Type: AssetTypeStock, AccountIDs: []int64{1}})
 	assertMoneyValidationError(t, err, "Asset account must be brokerage or crypto: 1")
 
-	_, err = service.CreateAsset(context.Background(), 1, AssetInput{Title: "Asset", Ticker: "AAA", Type: AssetTypeStock, AccountIDs: []int64{2}, SuspendedUntil: stringPtr("2026-06-30")})
+	_, err = service.CreateAsset(context.Background(), 1, AssetInput{Title: "Asset", Ticker: "AAA", Type: AssetTypeStock, AccountIDs: []int64{2}, SuspendedUntil: new("2026-06-30")})
 	assertMoneyValidationError(t, err, "suspendedUntil requires suspendedSince to be set")
 
 	assetID, err := service.CreateAsset(context.Background(), 1, AssetInput{Title: "Asset", Ticker: "AAA", Type: AssetTypeStock, AccountIDs: []int64{2, 3}})
@@ -393,10 +393,10 @@ func TestServiceTransactionLifecycleAndValidation(t *testing.T) {
 		DateISO:    "2026-06-18",
 		AccountID:  1,
 		Amount:     1500,
-		CategoryID: int64Ptr(3),
+		CategoryID: new(int64(3)),
 		Kind:       TransactionKindIncome,
 		IsGift:     true,
-		Notes:      stringPtr("Salary"),
+		Notes:      new("Salary"),
 	})
 	if err != nil {
 		t.Fatalf("CreateTransaction() error = %v", err)
@@ -422,7 +422,7 @@ func TestServiceTransactionLifecycleAndValidation(t *testing.T) {
 		Amount:    1700,
 		Kind:      TransactionKindIncome,
 		IsGift:    false,
-		Notes:     stringPtr("Salary updated"),
+		Notes:     new("Salary updated"),
 	})
 	if err != nil {
 		t.Fatalf("UpdateTransaction() error = %v", err)
@@ -482,7 +482,7 @@ func TestServiceZeroAmountAllowedOnlyForIncomeAndExpense(t *testing.T) {
 	}{
 		{
 			name:  "expense zero",
-			input: TransactionInput{DateISO: "2026-06-18", AccountID: 1, Amount: 0, CategoryID: int64Ptr(2), Kind: TransactionKindExpense, Notes: stringPtr("refund")},
+			input: TransactionInput{DateISO: "2026-06-18", AccountID: 1, Amount: 0, CategoryID: new(int64(2)), Kind: TransactionKindExpense, Notes: new("refund")},
 		},
 		{
 			name:  "expense zero without category and with gift flag",
@@ -490,7 +490,7 @@ func TestServiceZeroAmountAllowedOnlyForIncomeAndExpense(t *testing.T) {
 		},
 		{
 			name:  "income zero",
-			input: TransactionInput{DateISO: "2026-06-18", AccountID: 1, Amount: 0, CategoryID: int64Ptr(3), Kind: TransactionKindIncome},
+			input: TransactionInput{DateISO: "2026-06-18", AccountID: 1, Amount: 0, CategoryID: new(int64(3)), Kind: TransactionKindIncome},
 		},
 		{
 			name:  "expense negative",
@@ -505,14 +505,14 @@ func TestServiceZeroAmountAllowedOnlyForIncomeAndExpense(t *testing.T) {
 		{
 			name: "transfer zero amount",
 			input: TransactionInput{
-				DateISO: "2026-06-18", AccountID: 1, Amount: 0, TwinAccountID: int64Ptr(2), TwinAmount: float64Ptr(10), Kind: TransactionKindTransfer,
+				DateISO: "2026-06-18", AccountID: 1, Amount: 0, TwinAccountID: new(int64(2)), TwinAmount: new(float64(10)), Kind: TransactionKindTransfer,
 			},
 			want: "amount must be greater than 0",
 		},
 		{
 			name: "transfer zero twin amount",
 			input: TransactionInput{
-				DateISO: "2026-06-18", AccountID: 1, Amount: 10, TwinAccountID: int64Ptr(2), TwinAmount: float64Ptr(0), Kind: TransactionKindTransfer,
+				DateISO: "2026-06-18", AccountID: 1, Amount: 10, TwinAccountID: new(int64(2)), TwinAmount: new(float64(0)), Kind: TransactionKindTransfer,
 			},
 			want: "amount must be greater than 0",
 		},
@@ -554,7 +554,7 @@ func TestServiceZeroAmountAllowedOnlyForIncomeAndExpense(t *testing.T) {
 
 	t.Run("update to zero and back", func(t *testing.T) {
 		created, _, err := service.CreateTransaction(context.Background(), 1, "op-zero-update-create", TransactionInput{
-			DateISO: "2026-06-18", AccountID: 1, Amount: 100, CategoryID: int64Ptr(2), Kind: TransactionKindExpense, Notes: stringPtr("order"),
+			DateISO: "2026-06-18", AccountID: 1, Amount: 100, CategoryID: new(int64(2)), Kind: TransactionKindExpense, Notes: new("order"),
 		})
 		if err != nil {
 			t.Fatalf("CreateTransaction() error = %v", err)
@@ -562,7 +562,7 @@ func TestServiceZeroAmountAllowedOnlyForIncomeAndExpense(t *testing.T) {
 
 		for step, want := range []float64{0, 100} {
 			_, _, err = service.UpdateTransaction(context.Background(), 1, fmt.Sprintf("op-zero-update-%d", step), created.ID, TransactionInput{
-				DateISO: "2026-06-18", AccountID: 1, Amount: want, CategoryID: int64Ptr(2), Kind: TransactionKindExpense, Notes: stringPtr("order, refunded 2026-06-25"),
+				DateISO: "2026-06-18", AccountID: 1, Amount: want, CategoryID: new(int64(2)), Kind: TransactionKindExpense, Notes: new("order, refunded 2026-06-25"),
 			})
 			if err != nil {
 				t.Fatalf("UpdateTransaction() amount %v error = %v", want, err)
@@ -593,7 +593,7 @@ func TestServiceZeroAmountAllowedOnlyForIncomeAndExpense(t *testing.T) {
 		}
 
 		_, _, err = service.UpdateTransaction(context.Background(), 1, "op-zero-legacy-update", legacyID, TransactionInput{
-			DateISO: "2024-10-25", AccountID: 1, Amount: 0, CategoryID: int64Ptr(2), Kind: TransactionKindExpense, IsGift: true, Notes: stringPtr("legacy refund, edited"),
+			DateISO: "2024-10-25", AccountID: 1, Amount: 0, CategoryID: new(int64(2)), Kind: TransactionKindExpense, IsGift: true, Notes: new("legacy refund, edited"),
 		})
 		if err != nil {
 			t.Fatalf("UpdateTransaction() error = %v", err)
@@ -620,10 +620,10 @@ func TestServiceTransferLifecycleAndRollback(t *testing.T) {
 		DateISO:       "2026-06-18",
 		AccountID:     1,
 		Amount:        100,
-		TwinAccountID: int64Ptr(2),
-		TwinAmount:    float64Ptr(95),
+		TwinAccountID: new(int64(2)),
+		TwinAmount:    new(float64(95)),
 		Kind:          TransactionKindTransfer,
-		Notes:         stringPtr("Move"),
+		Notes:         new("Move"),
 	})
 	if err != nil {
 		t.Fatalf("CreateTransaction() error = %v", err)
@@ -651,10 +651,10 @@ func TestServiceTransferLifecycleAndRollback(t *testing.T) {
 		DateISO:       "2026-06-19",
 		AccountID:     1,
 		Amount:        110,
-		TwinAccountID: int64Ptr(2),
-		TwinAmount:    float64Ptr(108),
+		TwinAccountID: new(int64(2)),
+		TwinAmount:    new(float64(108)),
 		Kind:          TransactionKindTransfer,
-		Notes:         stringPtr("Move updated"),
+		Notes:         new("Move updated"),
 	})
 	if err != nil {
 		t.Fatalf("UpdateTransaction() error = %v", err)
@@ -679,8 +679,8 @@ func TestServiceTransferLifecycleAndRollback(t *testing.T) {
 		DateISO:       "2026-06-19",
 		AccountID:     1,
 		Amount:        110,
-		TwinAccountID: int64Ptr(3),
-		TwinAmount:    float64Ptr(108),
+		TwinAccountID: new(int64(3)),
+		TwinAmount:    new(float64(108)),
 		Kind:          TransactionKindTransfer,
 	})
 	assertMoneyValidationError(t, err, "Account cannot be changed")
@@ -709,8 +709,8 @@ func TestServiceTransferLifecycleAndRollback(t *testing.T) {
 		DateISO:       "2026-06-20",
 		AccountID:     1,
 		Amount:        50,
-		TwinAccountID: int64Ptr(999),
-		TwinAmount:    float64Ptr(49),
+		TwinAccountID: new(int64(999)),
+		TwinAmount:    new(float64(49)),
 		Kind:          TransactionKindTransfer,
 	})
 	if err == nil {
@@ -840,7 +840,7 @@ func TestServiceInvestTransactionLifecycleAndValidation(t *testing.T) {
 	_, _, err = service.CreateTransaction(context.Background(), 1, "op-invalid-category", TransactionInput{
 		DateISO:    "2026-06-22",
 		AccountID:  2,
-		CategoryID: int64Ptr(1),
+		CategoryID: new(int64(1)),
 		Kind:       TransactionKindInvestBuy,
 		DetailsJSON: map[string]any{
 			"assetId":          1,
@@ -903,7 +903,7 @@ func TestCreateTransactionSameOperationIDReplaysWithoutDuplicate(t *testing.T) {
 		AccountID: 1,
 		Amount:    1500,
 		Kind:      TransactionKindIncome,
-		Notes:     stringPtr("Salary"),
+		Notes:     new("Salary"),
 	}
 
 	first, applied, err := service.CreateTransaction(context.Background(), 1, "op-retry", input)
@@ -1220,8 +1220,8 @@ func insertMoneyRateHistory(t *testing.T, db *sql.DB, rateHistoryID int64, dateI
 func makeBase64PNG(t *testing.T, width int, height int) string {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			img.Set(x, y, color.RGBA{R: 200, G: 100, B: 50, A: 255})
 		}
 	}
@@ -1230,18 +1230,6 @@ func makeBase64PNG(t *testing.T, width int, height int) string {
 		t.Fatalf("png.Encode() error = %v", err)
 	}
 	return base64.StdEncoding.EncodeToString(buffer.Bytes())
-}
-
-func int64Ptr(value int64) *int64 {
-	return &value
-}
-
-func stringPtr(value string) *string {
-	return &value
-}
-
-func float64Ptr(value float64) *float64 {
-	return &value
 }
 
 type fixedMoneyClock struct {

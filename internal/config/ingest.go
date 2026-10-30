@@ -50,7 +50,7 @@ func loadIngest() ([]IngestSource, []string, error) {
 func parseIngestSources(raw string) ([]IngestSource, error) {
 	var sources []IngestSource
 	seen := map[string]bool{}
-	for _, part := range strings.Split(raw, ",") {
+	for part := range strings.SplitSeq(raw, ",") {
 		entry := strings.TrimSpace(part)
 		if entry == "" {
 			continue
@@ -83,7 +83,7 @@ func parseIngestSources(raw string) ([]IngestSource, error) {
 func parseIngestKeys(raw string) ([]string, error) {
 	var keys []string
 	seen := map[string]bool{}
-	for _, part := range strings.Split(raw, ",") {
+	for part := range strings.SplitSeq(raw, ",") {
 		key := strings.TrimSpace(part)
 		if key == "" {
 			continue

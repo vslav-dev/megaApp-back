@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"reflect"
 	"sort"
@@ -330,9 +331,7 @@ func cloneBatchRates(value map[string]map[string]float64) map[string]map[string]
 
 func cloneTickerRates(value map[string]float64) map[string]float64 {
 	result := make(map[string]float64, len(value))
-	for ticker, rate := range value {
-		result[ticker] = rate
-	}
+	maps.Copy(result, value)
 	return result
 }
 

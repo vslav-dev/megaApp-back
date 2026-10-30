@@ -118,7 +118,7 @@ func (h *Handler) UpdateOrganization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -134,7 +134,7 @@ func (h *Handler) UpdateOrganization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Organization updated successfully")
+	writeSuccessMessage(w, "Organization updated successfully")
 }
 
 func (h *Handler) DeleteOrganization(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +144,7 @@ func (h *Handler) DeleteOrganization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -154,7 +154,7 @@ func (h *Handler) DeleteOrganization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Organization deleted successfully")
+	writeSuccessMessage(w, "Organization deleted successfully")
 }
 
 func (h *Handler) GetCurrencies(w http.ResponseWriter, r *http.Request) {
@@ -202,7 +202,7 @@ func (h *Handler) UpdateCurrency(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -218,7 +218,7 @@ func (h *Handler) UpdateCurrency(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Currency updated successfully")
+	writeSuccessMessage(w, "Currency updated successfully")
 }
 
 func (h *Handler) DeleteCurrency(w http.ResponseWriter, r *http.Request) {
@@ -228,7 +228,7 @@ func (h *Handler) DeleteCurrency(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -238,7 +238,7 @@ func (h *Handler) DeleteCurrency(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Currency deleted successfully")
+	writeSuccessMessage(w, "Currency deleted successfully")
 }
 
 func (h *Handler) GetCategories(w http.ResponseWriter, r *http.Request) {
@@ -286,7 +286,7 @@ func (h *Handler) UpdateCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -302,7 +302,7 @@ func (h *Handler) UpdateCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Category updated successfully")
+	writeSuccessMessage(w, "Category updated successfully")
 }
 
 func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
@@ -312,7 +312,7 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -322,7 +322,7 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Category deleted successfully")
+	writeSuccessMessage(w, "Category deleted successfully")
 }
 
 func (h *Handler) GetAccounts(w http.ResponseWriter, r *http.Request) {
@@ -370,7 +370,7 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -386,7 +386,7 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Account updated successfully")
+	writeSuccessMessage(w, "Account updated successfully")
 }
 
 func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
@@ -396,7 +396,7 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -406,7 +406,7 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Account deleted successfully")
+	writeSuccessMessage(w, "Account deleted successfully")
 }
 
 func (h *Handler) GetAssets(w http.ResponseWriter, r *http.Request) {
@@ -454,7 +454,7 @@ func (h *Handler) UpdateAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -470,7 +470,7 @@ func (h *Handler) UpdateAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Asset updated successfully")
+	writeSuccessMessage(w, "Asset updated successfully")
 }
 
 func (h *Handler) DeleteAsset(w http.ResponseWriter, r *http.Request) {
@@ -480,7 +480,7 @@ func (h *Handler) DeleteAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -490,7 +490,7 @@ func (h *Handler) DeleteAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Asset deleted successfully")
+	writeSuccessMessage(w, "Asset deleted successfully")
 }
 
 func (h *Handler) GetTransactions(w http.ResponseWriter, r *http.Request) {
@@ -563,7 +563,7 @@ func (h *Handler) UpdateTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -594,7 +594,7 @@ func (h *Handler) DeleteTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -616,11 +616,11 @@ func (h *Handler) DeleteTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Transaction deleted successfully")
+	writeSuccessMessage(w, "Transaction deleted successfully")
 }
 
-func parseIDParam(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
-	id, err := strconv.ParseInt(chi.URLParam(r, name), 10, 64)
+func parseIDParam(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil || id <= 0 {
 		writeError(w, http.StatusBadRequest, "Invalid id")
 		return 0, false
@@ -632,8 +632,8 @@ func writeSuccessData(w http.ResponseWriter, statusCode int, data any) {
 	legacy.WriteJSON(w, statusCode, map[string]any{"success": true, "data": data})
 }
 
-func writeSuccessMessage(w http.ResponseWriter, statusCode int, message string) {
-	legacy.WriteJSON(w, statusCode, map[string]any{"success": true, "message": message})
+func writeSuccessMessage(w http.ResponseWriter, message string) {
+	legacy.WriteJSON(w, http.StatusOK, map[string]any{"success": true, "message": message})
 }
 
 func writeError(w http.ResponseWriter, statusCode int, message string) {

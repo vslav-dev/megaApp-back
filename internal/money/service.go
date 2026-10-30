@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image/png"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -447,16 +448,17 @@ func (s *Service) CreateTransaction(ctx context.Context, userID int64, operation
 		return CreateTransactionResult{}, false, err
 	}
 	isTransfer := normalized.Kind == TransactionKindTransfer
-	if isTransfer {
+	switch {
+	case isTransfer:
 		if err := s.ensureTransactionAccount(ctx, userID, *normalized.TwinAccountID); err != nil {
 			return CreateTransactionResult{}, false, err
 		}
-	} else if isInvestTransactionKind(normalized.Kind) {
+	case isInvestTransactionKind(normalized.Kind):
 		normalized, err = s.normalizeInvestTransaction(ctx, userID, normalized)
 		if err != nil {
 			return CreateTransactionResult{}, false, err
 		}
-	} else {
+	default:
 		if err := s.ensureTransactionCategory(ctx, userID, normalized.CategoryID, normalized.Kind); err != nil {
 			return CreateTransactionResult{}, false, err
 		}
@@ -531,7 +533,8 @@ func (s *Service) UpdateTransaction(ctx context.Context, userID int64, operation
 
 	isTransfer := existing.Kind == TransactionKindTransfer
 	var twinTransaction *Transaction
-	if isTransfer {
+	switch {
+	case isTransfer:
 		if normalized.TwinAccountID == nil || normalized.TwinAmount == nil {
 			return 0, false, missingFieldsError("twinAccountId", "twinAmount")
 		}
@@ -548,12 +551,12 @@ func (s *Service) UpdateTransaction(ctx context.Context, userID int64, operation
 		if *normalized.TwinAccountID != twinTransaction.AccountID {
 			return 0, false, legacy.NewError(legacy.ErrorKindValidation, "Account cannot be changed")
 		}
-	} else if isInvestTransactionKind(existing.Kind) {
+	case isInvestTransactionKind(existing.Kind):
 		normalized, err = s.normalizeExistingInvestTransaction(ctx, userID, *existing, normalized)
 		if err != nil {
 			return 0, false, err
 		}
-	} else {
+	default:
 		if err := s.ensureTransactionCategory(ctx, userID, normalized.CategoryID, normalized.Kind); err != nil {
 			return 0, false, err
 		}
@@ -788,7 +791,7 @@ func (s *Service) filterSnapshotRateHistory(rateHistory []RateHistory, currencie
 		if !ok {
 			continue
 		}
-		if _, _, _, ok := parseISODateParts(record.DateISO); !ok {
+		if _, _, ok := parseISODateParts(record.DateISO); !ok {
 			continue
 		}
 		allowedTickers := cloneTickerSet(currencyTickers)
@@ -846,7 +849,7 @@ func (s *Service) computeEOMHeldTickers(investAssetTrades []InvestAssetTrade) ma
 		return events[i].DateISO < events[j].DateISO
 	})
 
-	firstYear, firstMonth, _, ok := parseISODateParts(events[0].DateISO)
+	firstYear, firstMonth, ok := parseISODateParts(events[0].DateISO)
 	if !ok {
 		return map[string]map[string]struct{}{}
 	}
@@ -1255,23 +1258,23 @@ func parseRatesJSON(value string) (map[string]float64, bool) {
 	return result, true
 }
 
-func parseISODateParts(value string) (int, int, int, bool) {
+func parseISODateParts(value string) (int, int, bool) {
 	if len(value) != len("2006-01-02") {
-		return 0, 0, 0, false
+		return 0, 0, false
 	}
 	year, err := strconv.Atoi(value[0:4])
 	if err != nil {
-		return 0, 0, 0, false
+		return 0, 0, false
 	}
 	month, err := strconv.Atoi(value[5:7])
 	if err != nil || month < 1 || month > 12 {
-		return 0, 0, 0, false
+		return 0, 0, false
 	}
 	day, err := strconv.Atoi(value[8:10])
 	if err != nil || day < 1 || day > 31 {
-		return 0, 0, 0, false
+		return 0, 0, false
 	}
-	return year, month, day, true
+	return year, month, true
 }
 
 func cloneTickerSet(values map[string]struct{}) map[string]struct{} {
@@ -1381,7 +1384,7 @@ func normalizeAccountIDs(accountIDs []int64) []int64 {
 	for accountID := range set {
 		result = append(result, accountID)
 	}
-	sort.Slice(result, func(i int, j int) bool { return result[i] < result[j] })
+	slices.Sort(result)
 	return result
 }
 
@@ -1398,12 +1401,7 @@ func sameIDList(first []int64, second []int64) bool {
 }
 
 func containsID(values []int64, want int64) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 func normalizeLogoBase64(value *string) (*string, error) {

@@ -490,8 +490,7 @@ func (e httpError) Error() string {
 }
 
 func httpStatusOf(err error) int {
-	var target httpError
-	if errors.As(err, &target) {
+	if target, ok := errors.AsType[httpError](err); ok {
 		return target.status
 	}
 	return 0

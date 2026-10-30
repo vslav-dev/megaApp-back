@@ -82,10 +82,7 @@ func searchPickBonuses(picks []SearchPickRow, query string, now time.Time) map[i
 	for _, pick := range picks {
 		pickRunes := utf8.RuneCountInString(pick.Query)
 		closeness := float64(min(queryRunes, pickRunes)) / float64(max(queryRunes, pickRunes))
-		age := now.Sub(time.UnixMilli(pick.PickedAt))
-		if age < 0 {
-			age = 0
-		}
+		age := max(now.Sub(time.UnixMilli(pick.PickedAt)), 0)
 		weight := closeness * math.Exp2(-float64(age)/float64(searchPickHalfLife))
 		weights[pick.CatalogueID] += weight
 		total += weight

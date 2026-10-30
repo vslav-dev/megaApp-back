@@ -2,7 +2,6 @@ package httpx
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +16,7 @@ func TestAppStartsWithMetricsDisabled(t *testing.T) {
 	cfg.FlatlineBaseURL = ""
 	prepareAppTestFiles(t, cfg)
 
-	app, err := NewApp(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	app, err := NewApp(context.Background(), cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)
 	}

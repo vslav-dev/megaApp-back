@@ -75,7 +75,7 @@ var (
 func documentedOperations() map[string]bool {
 	operations := map[string]bool{}
 	path := ""
-	for _, line := range strings.Split(string(openAPISpec), "\n") {
+	for line := range strings.SplitSeq(string(openAPISpec), "\n") {
 		if match := specPathPattern.FindStringSubmatch(line); match != nil {
 			path = match[1]
 		} else if match := specMethodPattern.FindStringSubmatch(line); match != nil {

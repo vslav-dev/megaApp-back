@@ -367,13 +367,11 @@ func TestSearchIndexHolderBuildsOncePerSnapshot(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 20 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			if _, err := holder.Get(context.Background(), build); err != nil {
 				t.Errorf("Get() error = %v", err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if got := builds.Load(); got != 1 {

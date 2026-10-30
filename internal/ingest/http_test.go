@@ -30,7 +30,7 @@ const (
 )
 
 func quietLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 type testServer struct {
@@ -466,7 +466,7 @@ func TestEachSourceRotatesAtItsOwnSize(t *testing.T) {
 		{Name: "large", RotateBytes: 1 << 30},
 	}, []string{keyOne})
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		for _, source := range []string{"small", "large"} {
 			status, body := server.do(t, call{
 				path:    "/api/ingest/" + source,

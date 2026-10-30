@@ -562,7 +562,8 @@ func blurMask(mask *image.Alpha, sigma float64) *image.Alpha {
 	result := image.NewAlpha(mask.Bounds())
 	for y := result.Bounds().Min.Y; y < result.Bounds().Max.Y; y++ {
 		for x := result.Bounds().Min.X; x < result.Bounds().Max.X; x++ {
-			result.SetAlpha(x, y, color.Alpha{A: color.AlphaModel.Convert(blurred.At(x, y)).(color.Alpha).A})
+			_, _, _, alpha := blurred.At(x, y).RGBA()
+			result.SetAlpha(x, y, color.Alpha{A: uint8(alpha >> 8)})
 		}
 	}
 	return result

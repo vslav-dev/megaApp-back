@@ -3,7 +3,6 @@ package httpx
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -76,7 +75,7 @@ func TestOpsRoutes(t *testing.T) {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	app, err := NewApp(context.Background(), cfg, logger)
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)

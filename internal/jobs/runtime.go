@@ -2,7 +2,6 @@ package jobs
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"time"
 
@@ -18,7 +17,7 @@ type Runtime struct {
 
 func NewRuntime(logger *slog.Logger) *Runtime {
 	if logger == nil {
-		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+		logger = slog.New(slog.DiscardHandler)
 	}
 	return &Runtime{
 		logger: logger,

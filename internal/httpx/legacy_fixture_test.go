@@ -23,7 +23,7 @@ import (
 func TestLegacyFixtureCriticalRoutesMatchRecordedParity(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := legacyFixtureConfig(t, tempDir)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	clk := fixedLegacyClock{now: time.Date(2026, time.June, 18, 12, 0, 0, 0, time.UTC)}
 
 	app, err := newApp(context.Background(), cfg, logger, clk)
@@ -119,7 +119,7 @@ func TestLegacyFixtureProdLikeStartupWorks(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	app, err := newApp(context.Background(), cfg, logger, fixedLegacyClock{now: time.Date(2026, time.June, 18, 12, 0, 0, 0, time.UTC)})
 	if err != nil {
 		t.Fatalf("newApp() error = %v", err)
@@ -142,7 +142,7 @@ func TestLegacyFixtureProdLikeStartupWorks(t *testing.T) {
 func TestLegacyFixtureCriticalRoutesHandleLowConcurrency(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := legacyFixtureConfig(t, tempDir)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	clk := fixedLegacyClock{now: time.Date(2026, time.June, 18, 12, 0, 0, 0, time.UTC)}
 
 	app, err := newApp(context.Background(), cfg, logger, clk)
@@ -164,7 +164,7 @@ func TestLegacyFixtureCriticalRoutesHandleLowConcurrency(t *testing.T) {
 
 	errCh := make(chan error, len(urls)*3)
 	var wg sync.WaitGroup
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		for _, url := range urls {
 			wg.Add(1)
 			go func(url string) {

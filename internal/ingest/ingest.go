@@ -102,8 +102,7 @@ func (h *Handler) post(s *source) http.HandlerFunc {
 
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 		if err != nil {
-			var tooLarge *http.MaxBytesError
-			if errors.As(err, &tooLarge) {
+			if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 				legacy.WriteDetail(w, http.StatusRequestEntityTooLarge, "Request too large")
 				return
 			}

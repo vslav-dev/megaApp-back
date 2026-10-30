@@ -1,6 +1,7 @@
 package food
 
 import (
+	"maps"
 	"math"
 	"time"
 )
@@ -127,21 +128,12 @@ func (r *PersonalKcalResolver) AppliedNorm(yearMonth string) float64 {
 	return defaultPersonalNormKcals
 }
 
-func (r *PersonalKcalResolver) AppliedX(yearMonth string) float64 {
-	if value, ok := r.appliedX[yearMonth]; ok {
-		return value
-	}
-	return kcalsIn1KG
-}
-
 // AppliedKcalsNow returns the complete per-catalogue-id map for one specific month — every
 // catalogue id is present (bootstrapped to the catalogue default for untouched products),
 // mirroring how GetCoefficients always defaulted missing ids to 1.0.
 func (r *PersonalKcalResolver) AppliedKcalsNow(yearMonth string) map[int64]float64 {
 	result := make(map[int64]float64, len(r.catalogueKcals))
-	for id, defaultKcal := range r.catalogueKcals {
-		result[id] = defaultKcal
-	}
+	maps.Copy(result, r.catalogueKcals)
 	for id := range r.rawKcal {
 		result[id] = r.AppliedKcal(id, yearMonth)
 	}

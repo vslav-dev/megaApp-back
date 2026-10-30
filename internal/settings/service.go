@@ -346,8 +346,7 @@ func validateWhitelist(descriptor namespaceDescriptor, fields map[string]json.Ra
 func rejectNullForNonPointerFields(descriptor namespaceDescriptor, fields map[string]json.RawMessage) error {
 	structType := reflect.TypeOf(descriptor.newStruct()).Elem()
 	nonPointerFields := make(map[string]bool, structType.NumField())
-	for i := 0; i < structType.NumField(); i++ {
-		field := structType.Field(i)
+	for field := range structType.Fields() {
 		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
 		if name == "" || name == "-" {
 			continue

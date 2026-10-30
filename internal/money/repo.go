@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 
 	"megaapp-back/internal/platform/sqlite"
 )
@@ -827,8 +827,7 @@ func parseAccountIDs(value string) ([]int64, error) {
 
 	set := make(map[int64]struct{})
 	for _, item := range raw {
-		switch value := item.(type) {
-		case float64:
+		if value, ok := item.(float64); ok {
 			id := int64(value)
 			if value == float64(id) && id > 0 {
 				set[id] = struct{}{}
@@ -840,7 +839,7 @@ func parseAccountIDs(value string) ([]int64, error) {
 	for id := range set {
 		result = append(result, id)
 	}
-	sort.Slice(result, func(i int, j int) bool { return result[i] < result[j] })
+	slices.Sort(result)
 	return result, nil
 }
 

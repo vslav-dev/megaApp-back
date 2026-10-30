@@ -213,7 +213,7 @@ func newTestPipeline(t *testing.T, generator ImageGenerator, maxAttempts int, re
 	}
 	realtime := &recordingRealtime{}
 	readyRuns := &atomic.Int32{}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	pipeline := newImagePipeline(store, generator, realtime, func() { readyRuns.Add(1) }, maxAttempts, logger, time.Millisecond, retryBaseWait)
 	t.Cleanup(func() { _ = pipeline.Close() })
 	return testPipeline{ImagePipeline: pipeline, store: store, realtime: realtime, readyRuns: readyRuns}

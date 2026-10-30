@@ -3,8 +3,10 @@ package food
 import (
 	"context"
 	"errors"
+	"maps"
 	"math"
 	"math/rand"
+	"slices"
 	"sort"
 	"time"
 )
@@ -298,9 +300,7 @@ func runPersonalKcalMonthGA(seed personalKcalGenome, month personalKcalMonthBuck
 
 	const childrenPerParent = 4
 	parents := int(math.Round(float64(cfg.Population) / 4))
-	if parents < 1 {
-		parents = 1
-	}
+	parents = max(parents, 1)
 
 	type scoredGenome struct {
 		genome personalKcalGenome
@@ -325,12 +325,9 @@ func runPersonalKcalMonthGA(seed personalKcalGenome, month personalKcalMonthBuck
 			stale++
 		}
 
-		limit := parents
-		if limit > len(scored) {
-			limit = len(scored)
-		}
+		limit := min(parents, len(scored))
 		next := make([]personalKcalGenome, 0, limit*childrenPerParent)
-		for p := 0; p < limit; p++ {
+		for p := range limit {
 			next = append(next, scored[p].genome)
 			for c := 1; c < childrenPerParent; c++ {
 				next = append(next, mutatePersonalKcalGenome(scored[p].genome, touchedIDs, kcalByCat, cfg, rng))
@@ -413,14 +410,12 @@ func sortedPersonalKcalCatalogueIDs(input map[int64]float64) []int64 {
 	for id := range input {
 		result = append(result, id)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	slices.Sort(result)
 	return result
 }
 
 func cloneFloatByIDMap(input map[int64]float64) map[int64]float64 {
 	result := make(map[int64]float64, len(input))
-	for id, value := range input {
-		result[id] = value
-	}
+	maps.Copy(result, input)
 	return result
 }

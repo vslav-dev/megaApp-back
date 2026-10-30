@@ -1,6 +1,9 @@
 package food
 
-import "sync"
+import (
+	"maps"
+	"sync"
+)
 
 type StatsCache struct {
 	mu     sync.RWMutex
@@ -39,9 +42,7 @@ func (c *StatsCache) Delete(userID int64) {
 
 func cloneStatsResponse(input StatsResponse) StatsResponse {
 	days := make(map[string]DayStats, len(input.Days))
-	for key, value := range input.Days {
-		days[key] = value
-	}
+	maps.Copy(days, input.Days)
 	topProductsByKcal := make([]ProductStat, len(input.TopProductsByKcal))
 	copy(topProductsByKcal, input.TopProductsByKcal)
 	topProductsByWeight := make([]ProductStat, len(input.TopProductsByWeight))

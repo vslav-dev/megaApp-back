@@ -1,6 +1,6 @@
 version: "2"
 
-# Включён блок 1 («необходимое»). Блоки 2 и 3 и их состав: plans/49-go-linting.implementation-plan.md
+# Включён блок 1 («необходимое») и отобранная часть блока 2. Состав блоков: plans/49-go-linting.implementation-plan.md
 
 linters:
   default: none
@@ -17,8 +17,96 @@ linters:
     - noctx
     - nilerr
     - durationcheck
+    - modernize
+    - intrange
+    - sloglint
+    - gocritic
+    - forcetypeassert
+    - unparam
+    - depguard
+    - misspell
+    - unconvert
+    - usestdlibvars
+    - thelper
+    - tparallel
+    - copyloopvar
 
   settings:
+    # Слои: пакеты функциональностей изолированы друг от друга (общаются только через auth, ws, platform и httpx/legacy),
+    # общие слои не знают о функциональностях, platform — нижний слой. Сборка всего — в httpx.
+    # pkg сверяется по префиксу, поэтому metrics (у него есть подпакет wire) вынесен в отдельное правило.
+    depguard:
+      rules:
+        domain-isolation:
+          files:
+            - "**/internal/backup/**"
+            - "**/internal/food/**"
+            - "**/internal/ingest/**"
+            - "**/internal/metrics/**"
+            - "**/internal/money/**"
+            - "**/internal/quotes/**"
+            - "**/internal/settings/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: megaapp-back/internal/backup
+              desc: feature packages must not import each other; compose them in internal/httpx
+            - pkg: megaapp-back/internal/food
+              desc: feature packages must not import each other; compose them in internal/httpx
+            - pkg: megaapp-back/internal/ingest
+              desc: feature packages must not import each other; compose them in internal/httpx
+            - pkg: megaapp-back/internal/money
+              desc: feature packages must not import each other; compose them in internal/httpx
+            - pkg: megaapp-back/internal/quotes
+              desc: feature packages must not import each other; compose them in internal/httpx
+            - pkg: megaapp-back/internal/settings
+              desc: feature packages must not import each other; compose them in internal/httpx
+        domain-isolation-metrics:
+          files:
+            - "**/internal/backup/**"
+            - "**/internal/food/**"
+            - "**/internal/ingest/**"
+            - "**/internal/money/**"
+            - "**/internal/quotes/**"
+            - "**/internal/settings/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: megaapp-back/internal/metrics
+              desc: feature packages must not import each other; compose them in internal/httpx
+        shared-layers-independent:
+          files:
+            - "**/internal/auth/**"
+            - "**/internal/ws/**"
+            - "**/internal/config/**"
+            - "**/internal/jobs/**"
+            - "**/internal/httpx/legacy/**"
+            - "**/internal/platform/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: megaapp-back/internal/backup
+              desc: shared layers must not depend on feature packages
+            - pkg: megaapp-back/internal/food
+              desc: shared layers must not depend on feature packages
+            - pkg: megaapp-back/internal/ingest
+              desc: shared layers must not depend on feature packages
+            - pkg: megaapp-back/internal/metrics
+              desc: shared layers must not depend on feature packages
+            - pkg: megaapp-back/internal/money
+              desc: shared layers must not depend on feature packages
+            - pkg: megaapp-back/internal/quotes
+              desc: shared layers must not depend on feature packages
+            - pkg: megaapp-back/internal/settings
+              desc: shared layers must not depend on feature packages
+        platform-lowest-layer:
+          files:
+            - "**/internal/platform/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: megaapp-back/internal/auth
+              desc: platform is the lowest layer
+            - pkg: megaapp-back/internal/ws
+              desc: platform is the lowest layer
+            - pkg: megaapp-back/internal/httpx
+              desc: platform is the lowest layer
     errcheck:
       # [LOAD-BEARING] Close on read-side handles: the error carries no data loss and `defer x.Close()` is the Go idiom. Close on writers (os.File, archives) stays checked.
       exclude-functions:
@@ -36,6 +124,11 @@ linters:
       - path: _test\.go
         linters:
           - bodyclose
+      # [LOAD-BEARING] forcetypeassert and unparam in tests: a failed assertion just fails the test, and test helpers take constant arguments by design. Production code stays checked.
+      - path: _test\.go
+        linters:
+          - forcetypeassert
+          - unparam
 
 formatters:
   enable:
