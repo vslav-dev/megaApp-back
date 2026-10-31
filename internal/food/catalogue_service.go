@@ -378,7 +378,9 @@ func (s *Service) searchCatalogueIDs(ctx context.Context, userID int64, query st
 	if err != nil {
 		return nil, err
 	}
-	return index.rank(scores, scope, bonuses), nil
+	ids := index.rank(scores, scope, bonuses)
+	logSearchPersonalDebug(ctx, userID, normalizedQuery, bonuses, ids) // TODO(plan 48 debug): remove
+	return ids, nil
 }
 
 // baseScores is the part of a search that is the same for every user: served from the snapshot's cache,

@@ -112,6 +112,8 @@ func (h *WriteHandler) CreateDiaryEntry(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	logDiaryCreateDebug(r.Context(), claims.UserID, extractClientID(r), request.SearchQuery, applied) // TODO(plan 48 debug): remove
+
 	if applied {
 		h.realtime.MarkUserUpdated(claims.UserID)
 		h.realtime.PublishDiaryEntryCreated(claims.UserID, entry, extractClientID(r))
