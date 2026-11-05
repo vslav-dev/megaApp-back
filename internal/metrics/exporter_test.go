@@ -144,6 +144,117 @@ func TestExporterDoesNotSendOrAckBeforeOutboxWriteSucceeds(t *testing.T) {
 	}
 }
 
+// Regression: after a Flatline outage the business counters and the process
+// sampler of one minute sat in the queue as two snapshots with the same bucket;
+// Flatline answered 400 to the replayed batch and the queue stalled for good.
+func TestExporterMergesSnapshotsOfOneBucketQueuedDuringOutage(t *testing.T) {
+	dir := t.TempDir()
+	var attempts atomic.Int32
+	var accepted []pushRequest
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		var req pushRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		seen := make(map[int64]struct{})
+		for _, snapshot := range req.Snapshots {
+			if _, repeated := seen[snapshot.MinuteBucket]; repeated {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			seen[snapshot.MinuteBucket] = struct{}{}
+		}
+		accepted = append(accepted, req)
+		_ = json.NewEncoder(w).Encode(pushResponse{Result: true})
+	}))
+	defer server.Close()
+
+	ackPath := filepath.Join(dir, "metrics-outbox.ack.json")
+	exporter, err := NewExporter(ExporterConfig{
+		Service:    "megaapp",
+		NDJSONPath: filepath.Join(dir, "metrics-outbox.ndjson"),
+		AckPath:    ackPath,
+	}, NewFlatlineClient(server.URL, time.Second), discardLogger())
+	if err != nil {
+		t.Fatalf("NewExporter() error = %v", err)
+	}
+
+	exporter.FlushAndPush(context.Background(), 60, []MetricPoint{{Name: "food_diary_entry_created", Value: 1}})
+	exporter.FlushAndPush(context.Background(), 60, []MetricPoint{{Name: "process_rss_bytes", Value: 5}})
+	exporter.FlushAndPush(context.Background(), 120, []MetricPoint{{Name: "process_rss_bytes", Value: 6}})
+
+	if len(accepted) != 1 || len(accepted[0].Snapshots) != 2 {
+		t.Fatalf("accepted = %+v, want one request with two snapshots", accepted)
+	}
+	first := accepted[0].Snapshots[0]
+	if first.MinuteBucket != 60 || first.Metrics["food_diary_entry_created"] != 1 || first.Metrics["process_rss_bytes"] != 5 {
+		t.Fatalf("first snapshot = %+v, want bucket 60 with both metrics merged", first)
+	}
+	if len(exporter.pending) != 0 {
+		t.Fatalf("len(pending) = %d, want 0 after the queue drained", len(exporter.pending))
+	}
+	acked, err := readAck(ackPath)
+	if err != nil {
+		t.Fatalf("readAck() error = %v", err)
+	}
+	if acked != 120 {
+		t.Fatalf("acked = %d, want 120", acked)
+	}
+}
+
+func TestUpsertSnapshotKeepsBucketsSortedAndUnique(t *testing.T) {
+	var snapshots []MinuteSnapshot
+	for _, snapshot := range []MinuteSnapshot{
+		{MinuteBucket: 180, Metrics: map[string]float64{"a": 1}},
+		{MinuteBucket: 60, Metrics: map[string]float64{"a": 2}},
+		{MinuteBucket: 180, Metrics: map[string]float64{"a": 3, "b": 4}},
+		{MinuteBucket: 120, Metrics: map[string]float64{"c": 5}},
+	} {
+		snapshots = upsertSnapshot(snapshots, snapshot)
+	}
+
+	if len(snapshots) != 3 {
+		t.Fatalf("len(snapshots) = %d, want 3: %+v", len(snapshots), snapshots)
+	}
+	for i, wantBucket := range []int64{60, 120, 180} {
+		if snapshots[i].MinuteBucket != wantBucket {
+			t.Fatalf("snapshots[%d].MinuteBucket = %d, want %d", i, snapshots[i].MinuteBucket, wantBucket)
+		}
+	}
+	if snapshots[2].Metrics["a"] != 3 || snapshots[2].Metrics["b"] != 4 {
+		t.Fatalf("snapshots[2].Metrics = %v, want a=3 (later wins) b=4", snapshots[2].Metrics)
+	}
+}
+
+func TestNewExporterMergesOutboxLinesOfOneBucket(t *testing.T) {
+	dir := t.TempDir()
+	outboxPath := filepath.Join(dir, "metrics-outbox.ndjson")
+	writeTestOutbox(t, numberedOutboxPath(outboxPath, 1),
+		outboxLine{Service: "megaapp", MinuteBucket: 60, Metrics: map[string]float64{"food_diary_entry_created": 1}},
+		outboxLine{Service: "megaapp", MinuteBucket: 60, Metrics: map[string]float64{"process_rss_bytes": 5}},
+		outboxLine{Service: "megaapp", MinuteBucket: 120, Metrics: map[string]float64{"process_rss_bytes": 6}},
+	)
+
+	exporter, err := NewExporter(ExporterConfig{
+		Service:    "megaapp",
+		NDJSONPath: outboxPath,
+		AckPath:    filepath.Join(dir, "metrics-outbox.ack.json"),
+	}, NewFlatlineClient("http://127.0.0.1:0", time.Second), discardLogger())
+	if err != nil {
+		t.Fatalf("NewExporter() error = %v", err)
+	}
+
+	if len(exporter.pending) != 2 {
+		t.Fatalf("len(pending) = %d, want 2", len(exporter.pending))
+	}
+	if metrics := exporter.pending[0].Metrics; metrics["food_diary_entry_created"] != 1 || metrics["process_rss_bytes"] != 5 {
+		t.Fatalf("pending[0].Metrics = %v, want both metrics of bucket 60 kept", metrics)
+	}
+}
+
 func TestExporterIgnoresEmptyPoints(t *testing.T) {
 	dir := t.TempDir()
 	called := false

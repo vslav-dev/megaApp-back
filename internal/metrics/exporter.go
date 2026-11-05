@@ -1,13 +1,16 @@
 package metrics
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 type ExporterConfig struct {
@@ -71,9 +74,25 @@ func (e *Exporter) persistUnpersisted() {
 			e.logger.Error("metrics_outbox_append_failed", "bucket", snapshot.MinuteBucket, "err", err)
 			return
 		}
-		e.pending = append(e.pending, snapshot)
+		e.pending = upsertSnapshot(e.pending, snapshot)
 		e.unpersisted = e.unpersisted[1:]
 	}
+}
+
+// upsertSnapshot keeps snapshots sorted by bucket with one entry per bucket:
+// the business counters and the process sampler close their minute
+// independently and can land on the same bucket, and a replayed queue must
+// never repeat a bucket within one push. Metrics of a repeated bucket are
+// merged, the later value wins per name.
+func upsertSnapshot(snapshots []MinuteSnapshot, snapshot MinuteSnapshot) []MinuteSnapshot {
+	i, found := slices.BinarySearchFunc(snapshots, snapshot.MinuteBucket, func(existing MinuteSnapshot, bucket int64) int {
+		return cmp.Compare(existing.MinuteBucket, bucket)
+	})
+	if found {
+		maps.Copy(snapshots[i].Metrics, snapshot.Metrics)
+		return snapshots
+	}
+	return slices.Insert(snapshots, i, snapshot)
 }
 
 func (e *Exporter) tryFlushPending(ctx context.Context) {

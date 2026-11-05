@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"bufio"
-	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -106,7 +105,7 @@ func readPendingSnapshots(basePath, service string, lastAcked int64) ([]MinuteSn
 		return nil, err
 	}
 
-	byBucket := make(map[int64]MinuteSnapshot)
+	pending := make([]MinuteSnapshot, 0)
 	for _, path := range files {
 		if err := readOutboxFile(path, func(line outboxLine) error {
 			if strings.TrimSpace(line.Service) == "" {
@@ -126,23 +125,16 @@ func readPendingSnapshots(basePath, service string, lastAcked int64) ([]MinuteSn
 			if line.MinuteBucket <= lastAcked {
 				return nil
 			}
-			byBucket[line.MinuteBucket] = MinuteSnapshot{
+			pending = upsertSnapshot(pending, MinuteSnapshot{
 				MinuteBucket: line.MinuteBucket,
 				Metrics:      line.Metrics,
-			}
+			})
 			return nil
 		}); err != nil {
 			return nil, err
 		}
 	}
 
-	pending := make([]MinuteSnapshot, 0, len(byBucket))
-	for _, snapshot := range byBucket {
-		pending = append(pending, snapshot)
-	}
-	slices.SortFunc(pending, func(left, right MinuteSnapshot) int {
-		return cmp.Compare(left.MinuteBucket, right.MinuteBucket)
-	})
 	return pending, nil
 }
 
