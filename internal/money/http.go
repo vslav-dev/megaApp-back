@@ -50,7 +50,6 @@ func RegisterRoutes(router chi.Router, authService *auth.Service, handler *Handl
 		r.Delete("/assets/{id}", handler.DeleteAsset)
 
 		r.Get("/transactions", handler.GetTransactions)
-		r.Get("/trades", handler.GetInvestAssetTrades)
 		r.Get("/rate-history", handler.GetRateHistory)
 		r.Post("/transactions", handler.CreateTransaction)
 		r.Put("/transactions/{id}", handler.UpdateTransaction)
@@ -119,7 +118,7 @@ func (h *Handler) UpdateOrganization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -135,7 +134,7 @@ func (h *Handler) UpdateOrganization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Organization updated successfully")
+	writeSuccessMessage(w, "Organization updated successfully")
 }
 
 func (h *Handler) DeleteOrganization(w http.ResponseWriter, r *http.Request) {
@@ -145,7 +144,7 @@ func (h *Handler) DeleteOrganization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -155,7 +154,7 @@ func (h *Handler) DeleteOrganization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Organization deleted successfully")
+	writeSuccessMessage(w, "Organization deleted successfully")
 }
 
 func (h *Handler) GetCurrencies(w http.ResponseWriter, r *http.Request) {
@@ -203,7 +202,7 @@ func (h *Handler) UpdateCurrency(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -219,7 +218,7 @@ func (h *Handler) UpdateCurrency(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Currency updated successfully")
+	writeSuccessMessage(w, "Currency updated successfully")
 }
 
 func (h *Handler) DeleteCurrency(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +228,7 @@ func (h *Handler) DeleteCurrency(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -239,7 +238,7 @@ func (h *Handler) DeleteCurrency(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Currency deleted successfully")
+	writeSuccessMessage(w, "Currency deleted successfully")
 }
 
 func (h *Handler) GetCategories(w http.ResponseWriter, r *http.Request) {
@@ -287,7 +286,7 @@ func (h *Handler) UpdateCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -303,7 +302,7 @@ func (h *Handler) UpdateCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Category updated successfully")
+	writeSuccessMessage(w, "Category updated successfully")
 }
 
 func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
@@ -313,7 +312,7 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -323,7 +322,7 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Category deleted successfully")
+	writeSuccessMessage(w, "Category deleted successfully")
 }
 
 func (h *Handler) GetAccounts(w http.ResponseWriter, r *http.Request) {
@@ -371,7 +370,7 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -387,7 +386,7 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Account updated successfully")
+	writeSuccessMessage(w, "Account updated successfully")
 }
 
 func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
@@ -397,7 +396,7 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -407,7 +406,7 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Account deleted successfully")
+	writeSuccessMessage(w, "Account deleted successfully")
 }
 
 func (h *Handler) GetAssets(w http.ResponseWriter, r *http.Request) {
@@ -455,7 +454,7 @@ func (h *Handler) UpdateAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -471,7 +470,7 @@ func (h *Handler) UpdateAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Asset updated successfully")
+	writeSuccessMessage(w, "Asset updated successfully")
 }
 
 func (h *Handler) DeleteAsset(w http.ResponseWriter, r *http.Request) {
@@ -481,7 +480,7 @@ func (h *Handler) DeleteAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -491,7 +490,7 @@ func (h *Handler) DeleteAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Asset deleted successfully")
+	writeSuccessMessage(w, "Asset deleted successfully")
 }
 
 func (h *Handler) GetTransactions(w http.ResponseWriter, r *http.Request) {
@@ -504,22 +503,6 @@ func (h *Handler) GetTransactions(w http.ResponseWriter, r *http.Request) {
 	response, err := h.service.GetTransactions(r.Context(), claims.UserID)
 	if err != nil {
 		writeAppError(w, err, http.StatusInternalServerError, "Failed to get transactions")
-		return
-	}
-
-	writeSuccessData(w, http.StatusOK, response)
-}
-
-func (h *Handler) GetInvestAssetTrades(w http.ResponseWriter, r *http.Request) {
-	claims, ok := auth.UserClaimsFromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "Unauthorized")
-		return
-	}
-
-	response, err := h.service.GetInvestAssetTrades(r.Context(), claims.UserID)
-	if err != nil {
-		writeAppError(w, err, http.StatusInternalServerError, "Failed to get invest asset trades")
 		return
 	}
 
@@ -555,18 +538,22 @@ func (h *Handler) CreateTransaction(w http.ResponseWriter, r *http.Request) {
 		writeAppError(w, err, http.StatusBadRequest, "Invalid request body")
 		return
 	}
+	if request.OperationID == "" {
+		writeError(w, http.StatusBadRequest, "operationId is required")
+		return
+	}
 
-	created, err := h.service.CreateTransaction(r.Context(), claims.UserID, request)
+	created, _, err := h.service.CreateTransaction(r.Context(), claims.UserID, request.OperationID, request)
 	if err != nil {
 		writeAppError(w, err, http.StatusInternalServerError, "Failed to create transaction")
 		return
 	}
 
 	if created.TwinID != nil {
-		writeSuccessData(w, http.StatusCreated, map[string]any{"id": created.ID, "twinId": *created.TwinID})
+		writeSuccessData(w, http.StatusCreated, map[string]any{"id": created.ID, "twinId": *created.TwinID, "version": created.Version})
 		return
 	}
-	writeSuccessData(w, http.StatusCreated, map[string]int64{"id": created.ID})
+	writeSuccessData(w, http.StatusCreated, map[string]any{"id": created.ID, "version": created.Version})
 }
 
 func (h *Handler) UpdateTransaction(w http.ResponseWriter, r *http.Request) {
@@ -576,7 +563,7 @@ func (h *Handler) UpdateTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -586,13 +573,18 @@ func (h *Handler) UpdateTransaction(w http.ResponseWriter, r *http.Request) {
 		writeAppError(w, err, http.StatusBadRequest, "Invalid request body")
 		return
 	}
+	if request.OperationID == "" {
+		writeError(w, http.StatusBadRequest, "operationId is required")
+		return
+	}
 
-	if err := h.service.UpdateTransaction(r.Context(), claims.UserID, id, request); err != nil {
+	newVersion, _, err := h.service.UpdateTransaction(r.Context(), claims.UserID, request.OperationID, id, request)
+	if err != nil {
 		writeAppError(w, err, http.StatusInternalServerError, "Failed to update transaction")
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Transaction updated successfully")
+	writeSuccessData(w, http.StatusOK, map[string]any{"version": newVersion})
 }
 
 func (h *Handler) DeleteTransaction(w http.ResponseWriter, r *http.Request) {
@@ -602,21 +594,33 @@ func (h *Handler) DeleteTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
 
-	if err := h.service.DeleteTransaction(r.Context(), claims.UserID, id); err != nil {
+	var request struct {
+		OperationID string `json:"operationId"`
+	}
+	if err := legacy.DecodeJSON(r, &request); err != nil {
+		writeAppError(w, err, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if request.OperationID == "" {
+		writeError(w, http.StatusBadRequest, "operationId is required")
+		return
+	}
+
+	if _, err := h.service.DeleteTransaction(r.Context(), claims.UserID, request.OperationID, id); err != nil {
 		writeAppError(w, err, http.StatusInternalServerError, "Failed to delete transaction")
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Transaction deleted successfully")
+	writeSuccessMessage(w, "Transaction deleted successfully")
 }
 
-func parseIDParam(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
-	id, err := strconv.ParseInt(chi.URLParam(r, name), 10, 64)
+func parseIDParam(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil || id <= 0 {
 		writeError(w, http.StatusBadRequest, "Invalid id")
 		return 0, false
@@ -628,8 +632,8 @@ func writeSuccessData(w http.ResponseWriter, statusCode int, data any) {
 	legacy.WriteJSON(w, statusCode, map[string]any{"success": true, "data": data})
 }
 
-func writeSuccessMessage(w http.ResponseWriter, statusCode int, message string) {
-	legacy.WriteJSON(w, statusCode, map[string]any{"success": true, "message": message})
+func writeSuccessMessage(w http.ResponseWriter, message string) {
+	legacy.WriteJSON(w, http.StatusOK, map[string]any{"success": true, "message": message})
 }
 
 func writeError(w http.ResponseWriter, statusCode int, message string) {

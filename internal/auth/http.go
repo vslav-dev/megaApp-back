@@ -14,10 +14,12 @@ import (
 
 type contextKey string
 
-const userClaimsContextKey contextKey = "auth_user_claims"
+const identityContextKey contextKey = "auth_identity"
 
 type Handler struct {
-	service *Service
+	service          *Service
+	onSessionRevoked func(string)
+	onSessionRenewed func(string)
 }
 
 type credentialsRequest struct {
@@ -25,20 +27,33 @@ type credentialsRequest struct {
 	Password string `json:"password"`
 }
 
-type refreshRequest struct {
-	RefreshToken string `json:"refreshToken"`
+type sessionResponse struct {
+	Authenticated bool   `json:"authenticated"`
+	UserID        int64  `json:"userId"`
+	Username      string `json:"username"`
+	IsAdmin       bool   `json:"isAdmin"`
+	ExpiresAt     string `json:"expiresAt"`
 }
 
 func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
+func (h *Handler) SetSessionRevoker(revoker func(string)) {
+	h.onSessionRevoked = revoker
+}
+
+func (h *Handler) SetSessionRenewer(renewer func(string)) {
+	h.onSessionRenewed = renewer
+}
+
 func RegisterRoutes(router chi.Router, handler *Handler) {
 	router.Route("/api/auth", func(r chi.Router) {
-		r.Post("/register", handler.Register)
-		r.Post("/login", handler.Login)
-		r.Post("/refresh", handler.Refresh)
-		r.With(Middleware(handler.service)).Get("/verify", handler.Verify)
+		r.With(OriginMiddleware).Post("/register", handler.Register)
+		r.With(OriginMiddleware).Post("/login", handler.Login)
+		r.With(Middleware(handler.service)).Get("/session", handler.Session)
+		r.With(Middleware(handler.service)).Post("/renew", handler.Renew)
+		r.With(Middleware(handler.service)).Post("/logout", handler.Logout)
 	})
 }
 
@@ -72,7 +87,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response, err := h.service.Login(r.Context(), request.Username, request.Password)
+	result, err := h.service.Login(r.Context(), request.Username, request.Password)
 	if err != nil {
 		if errors.Is(err, ErrInvalidCreds) {
 			legacy.WriteDetail(w, http.StatusUnauthorized, err.Error())
@@ -81,98 +96,145 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		legacy.WriteAppDetailError(w, err, http.StatusInternalServerError, "Internal server error")
 		return
 	}
-
-	legacy.WriteJSON(w, http.StatusOK, response)
-}
-
-func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
-	var request refreshRequest
-	if err := legacy.DecodeJSON(r, &request); err != nil {
-		legacy.WriteAppMessageError(w, err, http.StatusBadRequest, "Invalid request body")
-		return
+	if previous, err := h.service.AuthenticateCookie(r.Context(), sessionCookieValue(r)); err == nil {
+		if err := h.service.Revoke(r.Context(), previous.SessionID); err != nil {
+			legacy.WriteAppDetailError(w, err, http.StatusInternalServerError, "Internal server error")
+			return
+		}
+		if h.onSessionRevoked != nil {
+			h.onSessionRevoked(previous.SessionID)
+		}
 	}
 
-	response, err := h.service.Refresh(r.Context(), request.RefreshToken)
+	setSessionCookie(w, r, result.Cookie, result.Identity.ExpiresAt)
+	legacy.WriteJSON(w, http.StatusOK, makeSessionResponse(result.Identity))
+}
+
+func (h *Handler) Session(w http.ResponseWriter, r *http.Request) {
+	identity, ok := IdentityFromContext(r.Context())
+	if !ok {
+		legacy.WriteDetail(w, http.StatusUnauthorized, "Invalid session")
+		return
+	}
+	legacy.WriteJSON(w, http.StatusOK, makeSessionResponse(identity))
+}
+
+func (h *Handler) Renew(w http.ResponseWriter, r *http.Request) {
+	identity, ok := IdentityFromContext(r.Context())
+	if !ok {
+		legacy.WriteDetail(w, http.StatusUnauthorized, "Invalid session")
+		return
+	}
+	renewed, err := h.service.Renew(r.Context(), identity)
 	if err != nil {
-		if errors.Is(err, ErrInvalidToken) {
-			legacy.WriteDetail(w, http.StatusUnauthorized, err.Error())
+		if errors.Is(err, ErrInvalidSession) {
+			clearSessionCookie(w, r)
+			legacy.WriteDetail(w, http.StatusUnauthorized, "Invalid session")
 			return
 		}
 		legacy.WriteAppDetailError(w, err, http.StatusInternalServerError, "Internal server error")
 		return
 	}
-
-	legacy.WriteJSON(w, http.StatusOK, response)
+	setSessionCookie(w, r, sessionCookieValue(r), renewed.ExpiresAt)
+	if renewed.ExpiresAt.After(identity.ExpiresAt) && h.onSessionRenewed != nil {
+		h.onSessionRenewed(renewed.SessionID)
+	}
+	legacy.WriteJSON(w, http.StatusOK, makeSessionResponse(renewed))
 }
 
-func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
-	claims, ok := UserClaimsFromContext(r.Context())
+func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	identity, ok := IdentityFromContext(r.Context())
 	if !ok {
-		legacy.WriteDetail(w, http.StatusUnauthorized, "Invalid token")
+		clearSessionCookie(w, r)
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-
-	user, err := h.service.GetUserByID(r.Context(), claims.UserID)
-	if err != nil {
+	if err := h.service.Revoke(r.Context(), identity.SessionID); err != nil {
 		legacy.WriteAppDetailError(w, err, http.StatusInternalServerError, "Internal server error")
 		return
 	}
-	isAdmin := claims.IsAdmin
-	if user != nil {
-		isAdmin = user.IsAdmin
+	if h.onSessionRevoked != nil {
+		h.onSessionRevoked(identity.SessionID)
 	}
-
-	legacy.WriteJSON(w, http.StatusOK, map[string]any{"authenticated": true, "userId": claims.UserID, "username": claims.Username, "isAdmin": isAdmin})
+	clearSessionCookie(w, r)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func Middleware(service *Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			authorizationHeader := strings.TrimSpace(r.Header.Get("Authorization"))
-			if authorizationHeader == "" {
-				legacy.WriteDetail(w, http.StatusUnauthorized, "Invalid token")
-				return
-			}
-
-			parts := strings.SplitN(authorizationHeader, " ", 2)
-			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || strings.TrimSpace(parts[1]) == "" {
-				legacy.WriteDetail(w, http.StatusUnauthorized, "Invalid token")
-				return
-			}
-
-			claims, err := service.Verify(strings.TrimSpace(parts[1]))
+		return OriginMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			identity, err := service.AuthenticateCookie(r.Context(), sessionCookieValue(r))
 			if err != nil {
-				legacy.WriteDetail(w, http.StatusUnauthorized, "Invalid token")
+				legacy.WriteDetail(w, http.StatusUnauthorized, "Invalid session")
 				return
 			}
-
-			ctx := context.WithValue(r.Context(), userClaimsContextKey, claims)
+			ctx := context.WithValue(r.Context(), identityContextKey, identity)
 			next.ServeHTTP(w, r.WithContext(ctx))
-		})
+		}))
 	}
 }
 
-func UserClaimsFromContext(ctx context.Context) (TokenClaims, bool) {
-	claims, ok := ctx.Value(userClaimsContextKey).(TokenClaims)
-	return claims, ok
+// crossOriginProtection judges by Sec-Fetch-Site, falling back to Origin against Host. In local dev
+// `ng serve` proxies /api with changeOrigin, so the backend sees Host localhost:3000 while the
+// browser still reports the call as same-origin: no trusted dev origins are needed.
+var crossOriginProtection = newCrossOriginProtection()
+
+func newCrossOriginProtection() *http.CrossOriginProtection {
+	protection := http.NewCrossOriginProtection()
+	protection.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		legacy.WriteDetail(w, http.StatusForbidden, "Cross-origin request rejected")
+	}))
+	return protection
 }
 
-func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
-	legacy.WriteJSON(w, statusCode, payload)
+func OriginMiddleware(next http.Handler) http.Handler {
+	return crossOriginProtection.Handler(next)
 }
 
-func writeError(w http.ResponseWriter, statusCode int, message string) {
-	legacy.WriteMessage(w, statusCode, message)
+func IdentityFromContext(ctx context.Context) (Identity, bool) {
+	identity, ok := ctx.Value(identityContextKey).(Identity)
+	return identity, ok
 }
 
-func writeDetailError(w http.ResponseWriter, statusCode int, detail string) {
-	legacy.WriteDetail(w, statusCode, detail)
+func UserClaimsFromContext(ctx context.Context) (Identity, bool) {
+	return IdentityFromContext(ctx)
 }
 
-func AccessTokenTTL() time.Duration {
-	return 24 * time.Hour
+func makeSessionResponse(identity Identity) sessionResponse {
+	return sessionResponse{
+		Authenticated: true,
+		UserID:        identity.UserID,
+		Username:      identity.Username,
+		IsAdmin:       identity.IsAdmin,
+		ExpiresAt:     identity.ExpiresAt.UTC().Format(time.RFC3339),
+	}
 }
 
-func RefreshTokenTTL() time.Duration {
-	return 31 * 24 * time.Hour
+func setSessionCookie(w http.ResponseWriter, r *http.Request, value string, expiresAt time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     SessionCookieName,
+		Value:    value,
+		Path:     "/",
+		Expires:  expiresAt,
+		MaxAge:   int(time.Until(expiresAt).Seconds()),
+		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{Name: SessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: requestIsHTTPS(r), SameSite: http.SameSiteLaxMode})
+}
+
+func sessionCookieValue(r *http.Request) string {
+	cookie, err := r.Cookie(SessionCookieName)
+	if err != nil {
+		return ""
+	}
+	return cookie.Value
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }

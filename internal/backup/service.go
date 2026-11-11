@@ -3,7 +3,6 @@ package backup
 import (
 	"archive/zip"
 	"context"
-	"database/sql"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +14,7 @@ import (
 	"megaapp-back/internal/httpx/legacy"
 	platformclock "megaapp-back/internal/platform/clock"
 	logplatform "megaapp-back/internal/platform/log"
+	"megaapp-back/internal/platform/sqlite"
 )
 
 const MetricJobRan = "backup_job_ran"
@@ -39,19 +39,19 @@ type ArchiveUploader interface {
 }
 
 type Service struct {
-	db       *sql.DB
+	db       sqlite.WriteDB
 	cfg      Config
 	clock    platformclock.Clock
 	logger   *slog.Logger
 	uploader ArchiveUploader
 }
 
-func NewService(db *sql.DB, cfg Config, clk platformclock.Clock, logger *slog.Logger, uploader ArchiveUploader) *Service {
+func NewService(db sqlite.WriteDB, cfg Config, clk platformclock.Clock, logger *slog.Logger, uploader ArchiveUploader) *Service {
 	if clk == nil {
 		clk = platformclock.NewRealClock()
 	}
 	if logger == nil {
-		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+		logger = slog.New(slog.DiscardHandler)
 	}
 	return &Service{db: db, cfg: cfg, clock: clk, logger: logger, uploader: uploader}
 }
@@ -99,7 +99,7 @@ func (s *Service) Run(ctx context.Context) (result RunResult, err error) {
 	}
 	archiveDuration := time.Since(archiveStartedAt)
 
-	uploadedKey := fmt.Sprintf("%s/%s", s.cfg.DatabaseEnv, filepath.Base(archivePath))
+	uploadedKey := filepath.Base(archivePath)
 	uploadStartedAt := time.Now()
 	if err := s.uploader.UploadFile(ctx, uploadedKey, archivePath, "application/zip", s.cfg.StorageClass); err != nil {
 		return RunResult{}, legacy.WrapError(legacy.ErrorKindExternal, "Failed to upload backup archive", err)
@@ -133,13 +133,13 @@ func createZipArchive(snapshotPath string, archivePath string, modifiedAt time.T
 	if err != nil {
 		return legacy.WrapError(legacy.ErrorKindInternal, "Failed to open snapshot file", err)
 	}
-	defer snapshotFile.Close()
+	defer func() { _ = snapshotFile.Close() }()
 
 	archiveFile, err := os.Create(archivePath)
 	if err != nil {
 		return legacy.WrapError(legacy.ErrorKindInternal, "Failed to create archive file", err)
 	}
-	defer archiveFile.Close()
+	defer func() { _ = archiveFile.Close() }()
 
 	zipWriter := zip.NewWriter(archiveFile)
 	entryWriter, err := zipWriter.CreateHeader(&zip.FileHeader{
@@ -157,6 +157,9 @@ func createZipArchive(snapshotPath string, archivePath string, modifiedAt time.T
 	}
 	if err := zipWriter.Close(); err != nil {
 		return legacy.WrapError(legacy.ErrorKindInternal, "Failed to finalize archive", err)
+	}
+	if err := archiveFile.Close(); err != nil {
+		return legacy.WrapError(legacy.ErrorKindInternal, "Failed to close archive file", err)
 	}
 	return nil
 }

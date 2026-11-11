@@ -2,36 +2,33 @@ package timetrack
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"megaapp-back/internal/httpx/legacy"
 	platformclock "megaapp-back/internal/platform/clock"
+	"megaapp-back/internal/platform/idempotency"
 )
 
 type Service struct {
-	repo  *Repository
-	clock platformclock.Clock
-
-	// mu serializes create/update-time Entry: the overlap check and the
-	// write must never interleave across two concurrent requests, see
-	// implementation plan ("Синхронизация с сервером"/«Сервис — инварианты»).
-	// Update-selection doesn't touch the interval, so it doesn't need it.
-	mu sync.Mutex
+	repo        *Repository
+	idempotency *idempotency.Store
+	clock       platformclock.Clock
 }
 
-func NewService(repo *Repository) *Service {
-	return NewServiceWithClock(repo, platformclock.NewRealClock())
+func NewService(repo *Repository, idempotencyStore *idempotency.Store) *Service {
+	return NewServiceWithClock(repo, idempotencyStore, platformclock.NewRealClock())
 }
 
-func NewServiceWithClock(repo *Repository, appClock platformclock.Clock) *Service {
+func NewServiceWithClock(repo *Repository, idempotencyStore *idempotency.Store, appClock platformclock.Clock) *Service {
 	if appClock == nil {
 		appClock = platformclock.NewRealClock()
 	}
-	return &Service{repo: repo, clock: appClock}
+	return &Service{repo: repo, idempotency: idempotencyStore, clock: appClock}
 }
 
 func (s *Service) now() string {
@@ -253,88 +250,154 @@ func (s *Service) GetEntries(ctx context.Context, userID int64, start *string) (
 	return s.repo.ListEntries(ctx, userID, start)
 }
 
-func (s *Service) CreateEntry(ctx context.Context, userID int64, input EntryInput) (int64, error) {
-	normalizedTime, err := validateEntryTime(input.Track, input.StartAt, input.EndAt)
-	if err != nil {
-		return 0, err
-	}
-	normalizedOptions, err := s.validateEntrySelection(ctx, userID, input.ActivityKindID, input.Options)
-	if err != nil {
-		return 0, err
-	}
+// Entry writes come from the frontend sync engine, which retries with the same operationId.
+// Every entry write is: replayed (an already-applied operationId returns its recorded result and
+// nothing else runs — the entry may have been changed or deleted since by an operation that
+// already subsumes it), then validated through the read pool, then written by recordOnce.
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	id, err := s.repo.CreateEntry(ctx, userID, EntryInput{
-		ActivityKindID: input.ActivityKindID,
-		Track:          normalizedTime.Track,
-		StartAt:        normalizedTime.StartAt,
-		EndAt:          normalizedTime.EndAt,
-		Options:        normalizedOptions,
-	}, s.now())
+func (s *Service) replayed(ctx context.Context, userID int64, operationID string) (string, bool, error) {
+	tx, err := s.idempotency.BeginTx(ctx)
 	if err != nil {
-		return 0, translateEntryWriteError(err)
+		return "", false, err
 	}
-	return id, nil
+	defer func() { _ = tx.Rollback() }()
+	return s.idempotency.Find(ctx, tx, userID, operationID)
 }
 
-func (s *Service) UpdateEntryTime(ctx context.Context, userID int64, entryID int64, input EntryTimeInput) error {
-	normalizedTime, err := validateEntryTime(input.Track, input.StartAt, input.EndAt)
+// recordOnce runs write and records its result under operationID in one transaction on the
+// single write connection, which also serializes the overlap check with the insert/update.
+func (s *Service) recordOnce(ctx context.Context, userID int64, operationID string, write func(tx *sql.Tx) (any, error)) (string, error) {
+	tx, err := s.idempotency.BeginTx(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	result, err := write(tx)
+	if err != nil {
+		return "", err
+	}
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return "", fmt.Errorf("encode entry write result: %w", err)
+	}
+	if err := s.idempotency.Record(ctx, tx, userID, operationID, string(resultJSON)); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit entry write: %w", err)
+	}
+	return string(resultJSON), nil
+}
+
+type createdEntry struct {
+	ID int64 `json:"id"`
+}
+
+func (s *Service) CreateEntry(ctx context.Context, userID int64, operationID string, input EntryInput) (int64, error) {
+	resultJSON, found, err := s.replayed(ctx, userID, operationID)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		entryTime, err := validateEntryTime(input.Track, input.StartAt, input.EndAt)
+		if err != nil {
+			return 0, err
+		}
+		options, err := s.validateEntrySelection(ctx, userID, input.ActivityKindID, input.Options)
+		if err != nil {
+			return 0, err
+		}
+		resultJSON, err = s.recordOnce(ctx, userID, operationID, func(tx *sql.Tx) (any, error) {
+			id, err := s.repo.CreateEntry(ctx, tx, userID, EntryInput{
+				ActivityKindID: input.ActivityKindID,
+				Track:          entryTime.Track,
+				StartAt:        entryTime.StartAt,
+				EndAt:          entryTime.EndAt,
+				Options:        options,
+			}, s.now())
+			if err != nil {
+				return nil, translateEntryWriteError(err)
+			}
+			return createdEntry{ID: id}, nil
+		})
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	var created createdEntry
+	if err := json.Unmarshal([]byte(resultJSON), &created); err != nil {
+		return 0, fmt.Errorf("decode entry create result: %w", err)
+	}
+	return created.ID, nil
+}
+
+func (s *Service) UpdateEntryTime(ctx context.Context, userID int64, operationID string, entryID int64, input EntryTimeInput) error {
+	_, found, err := s.replayed(ctx, userID, operationID)
+	if err != nil || found {
+		return err
+	}
+	entryTime, err := validateEntryTime(input.Track, input.StartAt, input.EndAt)
 	if err != nil {
 		return err
 	}
+	if err := s.ensureEntryExists(ctx, userID, entryID); err != nil {
+		return err
+	}
+	_, err = s.recordOnce(ctx, userID, operationID, func(tx *sql.Tx) (any, error) {
+		if err := s.repo.UpdateEntryTime(ctx, tx, userID, entryID, entryTime, s.now()); err != nil {
+			return nil, translateEntryWriteError(err)
+		}
+		return struct{}{}, nil
+	})
+	return err
+}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Service) UpdateEntrySelection(ctx context.Context, userID int64, operationID string, entryID int64, input EntrySelectionInput) error {
+	_, found, err := s.replayed(ctx, userID, operationID)
+	if err != nil || found {
+		return err
+	}
+	options, err := s.validateEntrySelection(ctx, userID, input.ActivityKindID, input.Options)
+	if err != nil {
+		return err
+	}
+	if err := s.ensureEntryExists(ctx, userID, entryID); err != nil {
+		return err
+	}
+	_, err = s.recordOnce(ctx, userID, operationID, func(tx *sql.Tx) (any, error) {
+		return struct{}{}, s.repo.UpdateEntrySelection(ctx, tx, userID, entryID, EntrySelectionInput{
+			ActivityKindID: input.ActivityKindID,
+			Options:        options,
+		}, s.now())
+	})
+	return err
+}
 
+func (s *Service) DeleteEntry(ctx context.Context, userID int64, operationID string, entryID int64) error {
+	_, found, err := s.replayed(ctx, userID, operationID)
+	if err != nil || found {
+		return err
+	}
+	if err := s.ensureEntryExists(ctx, userID, entryID); err != nil {
+		return err
+	}
+	_, err = s.recordOnce(ctx, userID, operationID, func(tx *sql.Tx) (any, error) {
+		return struct{}{}, s.repo.DeleteEntry(ctx, tx, userID, entryID)
+	})
+	return err
+}
+
+func (s *Service) ensureEntryExists(ctx context.Context, userID int64, entryID int64) error {
 	existing, err := s.repo.GetEntryByID(ctx, userID, entryID)
 	if err != nil {
 		return err
 	}
 	if existing == nil {
 		return legacy.NewError(legacy.ErrorKindNotFound, "Entry not found")
-	}
-
-	if err := s.repo.UpdateEntryTime(ctx, userID, entryID, EntryTimeInput{
-		Track:   normalizedTime.Track,
-		StartAt: normalizedTime.StartAt,
-		EndAt:   normalizedTime.EndAt,
-	}, s.now()); err != nil {
-		return translateEntryWriteError(err)
 	}
 	return nil
-}
-
-func (s *Service) UpdateEntrySelection(ctx context.Context, userID int64, entryID int64, input EntrySelectionInput) error {
-	normalizedOptions, err := s.validateEntrySelection(ctx, userID, input.ActivityKindID, input.Options)
-	if err != nil {
-		return err
-	}
-
-	existing, err := s.repo.GetEntryByID(ctx, userID, entryID)
-	if err != nil {
-		return err
-	}
-	if existing == nil {
-		return legacy.NewError(legacy.ErrorKindNotFound, "Entry not found")
-	}
-
-	return s.repo.UpdateEntrySelection(ctx, userID, entryID, EntrySelectionInput{
-		ActivityKindID: input.ActivityKindID,
-		Options:        normalizedOptions,
-	}, s.now())
-}
-
-func (s *Service) DeleteEntry(ctx context.Context, userID int64, entryID int64) error {
-	existing, err := s.repo.GetEntryByID(ctx, userID, entryID)
-	if err != nil {
-		return err
-	}
-	if existing == nil {
-		return legacy.NewError(legacy.ErrorKindNotFound, "Entry not found")
-	}
-	return s.repo.DeleteEntry(ctx, userID, entryID)
 }
 
 // validateEntrySelection enforces every semantic invariant from the plan:
@@ -416,13 +479,7 @@ func translateEntryWriteError(err error) error {
 	return err
 }
 
-type normalizedEntryTime struct {
-	Track   Track
-	StartAt string
-	EndAt   string
-}
-
-func validateEntryTime(track Track, startAt string, endAt string) (normalizedEntryTime, error) {
+func validateEntryTime(track Track, startAt string, endAt string) (EntryTimeInput, error) {
 	var missing []string
 	if startAt == "" {
 		missing = append(missing, "startAt")
@@ -431,15 +488,15 @@ func validateEntryTime(track Track, startAt string, endAt string) (normalizedEnt
 		missing = append(missing, "endAt")
 	}
 	if len(missing) > 0 {
-		return normalizedEntryTime{}, missingFieldsError(missing...)
+		return EntryTimeInput{}, missingFieldsError(missing...)
 	}
 	if !isValidTrack(track) {
-		return normalizedEntryTime{}, legacy.NewError(legacy.ErrorKindValidation, "track must be one of: primary, secondary")
+		return EntryTimeInput{}, legacy.NewError(legacy.ErrorKindValidation, "track must be one of: primary, secondary")
 	}
 	if endAt <= startAt {
-		return normalizedEntryTime{}, legacy.NewError(legacy.ErrorKindValidation, "endAt must be after startAt")
+		return EntryTimeInput{}, legacy.NewError(legacy.ErrorKindValidation, "endAt must be after startAt")
 	}
-	return normalizedEntryTime{Track: track, StartAt: startAt, EndAt: endAt}, nil
+	return EntryTimeInput{Track: track, StartAt: startAt, EndAt: endAt}, nil
 }
 
 func validateActivityKindInput(input ActivityKindInput) (ActivityKindInput, error) {

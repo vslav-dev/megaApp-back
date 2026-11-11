@@ -15,6 +15,11 @@ on:
         required: false
         type: string
         description: 'Specific commit SHA to deploy'
+      build-tags:
+        required: false
+        type: string
+        default: ''
+        description: 'Go build tags, e.g. swagger for the test build'
     secrets:
       HOST:
         required: true
@@ -49,8 +54,13 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Both variants are always tested: the swagger one holds the spec-vs-routes check, the plain
+      # one holds the check that the prod build has no documentation routes.
       - name: Run Go tests
-        run: go test ./...
+        run: |
+          set -eu
+          go test ./...
+          go test -tags swagger ./...
 
       - name: Resolve build info
         run: |
@@ -63,7 +73,7 @@ jobs:
           set -eu
           rm -rf deploy
           mkdir -p deploy
-          GOOS=linux GOARCH=amd64 go build -trimpath -o deploy/megaapp-server ./cmd/server
+          GOOS=linux GOARCH=amd64 go build -trimpath -tags "${{ inputs.build-tags }}" -o deploy/megaapp-server ./cmd/server
           cp -a migrations deploy/migrations
           printf '{"commit":"%s","time":"%s"}' "$COMMIT_SHA" "$BUILD_TIME" > deploy/build-info.json
           tar -C deploy -czf deploy/megaapp-server.tar.gz megaapp-server migrations build-info.json

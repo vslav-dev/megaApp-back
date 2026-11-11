@@ -3,7 +3,6 @@ package httpx
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -28,11 +27,12 @@ func TestOpsRoutes(t *testing.T) {
 		MigrationsDir:                       filepath.Join(tempDir, "migrations"),
 		PublicDir:                           filepath.Join(tempDir, "public"),
 		BackupsDir:                          filepath.Join(tempDir, "backups"),
-		JWTSecret:                           "test-secret",
+		MetricsEnabled:                      true,
 		FlatlineBaseURL:                     "http://127.0.0.1:1",
 		FlatlinePushTimeout:                 time.Second,
 		FlatlinePollInterval:                time.Hour,
 		FlatlinePollInitialLookback:         time.Minute,
+		FlatlinePollMaxCatchUp:              time.Hour,
 		OpenRouterTimeout:                   time.Minute,
 		OpenAITimeout:                       time.Minute,
 		PersonalKcalJobSchedule:             "0 2 1 * *",
@@ -75,7 +75,7 @@ func TestOpsRoutes(t *testing.T) {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	app, err := NewApp(context.Background(), cfg, logger)
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)
@@ -85,17 +85,17 @@ func TestOpsRoutes(t *testing.T) {
 	server := httptest.NewServer(app.Handler)
 	defer server.Close()
 
-	assertStatus(t, server.URL+"/health", http.StatusOK, "ok")
-	assertStatus(t, server.URL+"/readiness", http.StatusOK, "ready")
+	assertStatus(t, server.URL+"/api/health", http.StatusOK, "ok")
+	assertStatus(t, server.URL+"/api/readiness", http.StatusOK, "ready")
 
-	resp, err := http.Get(server.URL + "/build-info")
+	resp, err := http.Get(server.URL + "/api/build-info")
 	if err != nil {
-		t.Fatalf("GET /build-info error = %v", err)
+		t.Fatalf("GET /api/build-info error = %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("/build-info status = %d, want 200", resp.StatusCode)
+		t.Fatalf("/api/build-info status = %d, want 200", resp.StatusCode)
 	}
 
 	var body BuildInfoResponse
@@ -124,6 +124,38 @@ func TestOpsRoutes(t *testing.T) {
 
 	if commitBody.CommitHash != cfg.BuildCommit || commitBody.CommitDateTime != cfg.BuildTime {
 		t.Fatalf("unexpected commit info body = %+v", commitBody)
+	}
+
+	assertServerOnlyRoute(t, server.URL+"/api/debug/ping")
+	assertServerOnlyRoute(t, server.URL+"/api/lab/rebuild-image-variants")
+}
+
+// assertServerOnlyRoute: a direct call passes the server-only gate, the same call carrying the
+// headers nginx adds to forwarded requests is refused.
+func assertServerOnlyRoute(t *testing.T, url string) {
+	t.Helper()
+
+	direct, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s error = %v", url, err)
+	}
+	defer direct.Body.Close()
+	if direct.StatusCode == http.StatusForbidden {
+		t.Fatalf("GET %s without proxy headers status = %d, want not 403", url, direct.StatusCode)
+	}
+
+	request, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	request.Header.Set("X-Real-IP", "203.0.113.5")
+	proxied, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("GET %s error = %v", url, err)
+	}
+	defer proxied.Body.Close()
+	if proxied.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET %s with proxy headers status = %d, want 403", url, proxied.StatusCode)
 	}
 }
 

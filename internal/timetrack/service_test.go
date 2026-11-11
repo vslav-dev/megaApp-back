@@ -2,11 +2,14 @@ package timetrack
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"sync"
 	"testing"
 
 	"megaapp-back/internal/httpx/legacy"
+	"megaapp-back/internal/platform/idempotency"
+	"megaapp-back/internal/platform/sqlite"
 
 	_ "modernc.org/sqlite"
 )
@@ -14,10 +17,10 @@ import (
 func TestServiceEntryOverlapRejectedWithinSameTrack(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	kindID := createTestActivityKind(t, service, 1, "Coding", nil)
 
-	if _, err := service.CreateEntry(context.Background(), 1, EntryInput{
+	if _, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 		ActivityKindID: kindID,
 		Track:          TrackPrimary,
 		StartAt:        "2026-07-06T09:00:00Z",
@@ -26,7 +29,7 @@ func TestServiceEntryOverlapRejectedWithinSameTrack(t *testing.T) {
 		t.Fatalf("CreateEntry() first error = %v", err)
 	}
 
-	_, err := service.CreateEntry(context.Background(), 1, EntryInput{
+	_, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 		ActivityKindID: kindID,
 		Track:          TrackPrimary,
 		StartAt:        "2026-07-06T11:00:00Z",
@@ -43,10 +46,10 @@ func TestServiceEntryOverlapRejectedWithinSameTrack(t *testing.T) {
 func TestServiceEntryOverlapAllowedAcrossDifferentTracks(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	kindID := createTestActivityKind(t, service, 1, "Coding", nil)
 
-	if _, err := service.CreateEntry(context.Background(), 1, EntryInput{
+	if _, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 		ActivityKindID: kindID,
 		Track:          TrackPrimary,
 		StartAt:        "2026-07-06T09:00:00Z",
@@ -55,7 +58,7 @@ func TestServiceEntryOverlapAllowedAcrossDifferentTracks(t *testing.T) {
 		t.Fatalf("CreateEntry() primary error = %v", err)
 	}
 
-	if _, err := service.CreateEntry(context.Background(), 1, EntryInput{
+	if _, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 		ActivityKindID: kindID,
 		Track:          TrackSecondary,
 		StartAt:        "2026-07-06T09:30:00Z",
@@ -68,10 +71,10 @@ func TestServiceEntryOverlapAllowedAcrossDifferentTracks(t *testing.T) {
 func TestServiceEntryEndAtMustBeAfterStartAt(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	kindID := createTestActivityKind(t, service, 1, "Coding", nil)
 
-	_, err := service.CreateEntry(context.Background(), 1, EntryInput{
+	_, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 		ActivityKindID: kindID,
 		Track:          TrackPrimary,
 		StartAt:        "2026-07-06T12:00:00Z",
@@ -85,10 +88,10 @@ func TestServiceEntryEndAtMustBeAfterStartAt(t *testing.T) {
 func TestServiceUpdateEntryTimeExcludesItselfFromOverlapCheck(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	kindID := createTestActivityKind(t, service, 1, "Coding", nil)
 
-	entryID, err := service.CreateEntry(context.Background(), 1, EntryInput{
+	entryID, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 		ActivityKindID: kindID,
 		Track:          TrackPrimary,
 		StartAt:        "2026-07-06T09:00:00Z",
@@ -98,7 +101,7 @@ func TestServiceUpdateEntryTimeExcludesItselfFromOverlapCheck(t *testing.T) {
 		t.Fatalf("CreateEntry() error = %v", err)
 	}
 
-	if err := service.UpdateEntryTime(context.Background(), 1, entryID, EntryTimeInput{
+	if err := service.UpdateEntryTime(context.Background(), 1, rand.Text(), entryID, EntryTimeInput{
 		Track:   TrackPrimary,
 		StartAt: "2026-07-06T09:30:00Z",
 		EndAt:   "2026-07-06T12:30:00Z",
@@ -110,12 +113,12 @@ func TestServiceUpdateEntryTimeExcludesItselfFromOverlapCheck(t *testing.T) {
 func TestServiceUpdateEntryTimeDoesNotRevalidateSelection(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	groupID := createTestCategoryGroup(t, service, 1, "Game", nil)
 	optionID := createTestCategoryOption(t, service, 1, groupID, "ATS")
 	kindID := createTestActivityKind(t, service, 1, "Game", []GroupBinding{{GroupID: groupID, Required: true}})
 
-	entryID, err := service.CreateEntry(context.Background(), 1, EntryInput{
+	entryID, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 		ActivityKindID: kindID,
 		Track:          TrackPrimary,
 		StartAt:        "2026-07-06T09:00:00Z",
@@ -136,7 +139,7 @@ func TestServiceUpdateEntryTimeDoesNotRevalidateSelection(t *testing.T) {
 		t.Fatalf("UpdateActivityKind() error = %v", err)
 	}
 
-	if err := service.UpdateEntryTime(context.Background(), 1, entryID, EntryTimeInput{
+	if err := service.UpdateEntryTime(context.Background(), 1, rand.Text(), entryID, EntryTimeInput{
 		Track:   TrackPrimary,
 		StartAt: "2026-07-06T10:00:00Z",
 		EndAt:   "2026-07-06T13:00:00Z",
@@ -156,13 +159,13 @@ func TestServiceUpdateEntryTimeDoesNotRevalidateSelection(t *testing.T) {
 func TestServiceUpdateEntrySelectionDoesNotChangeTime(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	groupID := createTestCategoryGroup(t, service, 1, "Game", nil)
 	optionAID := createTestCategoryOption(t, service, 1, groupID, "ATS")
 	optionBID := createTestCategoryOption(t, service, 1, groupID, "ETS2")
 	kindID := createTestActivityKind(t, service, 1, "Game", []GroupBinding{{GroupID: groupID, Required: true}})
 
-	entryID, err := service.CreateEntry(context.Background(), 1, EntryInput{
+	entryID, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 		ActivityKindID: kindID,
 		Track:          TrackPrimary,
 		StartAt:        "2026-07-06T09:00:00Z",
@@ -173,7 +176,7 @@ func TestServiceUpdateEntrySelectionDoesNotChangeTime(t *testing.T) {
 		t.Fatalf("CreateEntry() error = %v", err)
 	}
 
-	if err := service.UpdateEntrySelection(context.Background(), 1, entryID, EntrySelectionInput{
+	if err := service.UpdateEntrySelection(context.Background(), 1, rand.Text(), entryID, EntrySelectionInput{
 		ActivityKindID: kindID,
 		Options:        []EntryOption{{GroupID: groupID, OptionID: optionBID}},
 	}); err != nil {
@@ -195,11 +198,11 @@ func TestServiceUpdateEntrySelectionDoesNotChangeTime(t *testing.T) {
 func TestServiceCreateEntryRequiresRequiredGroup(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	groupID := createTestCategoryGroup(t, service, 1, "Game", nil)
 	kindID := createTestActivityKind(t, service, 1, "Game", []GroupBinding{{GroupID: groupID, Required: true}})
 
-	_, err := service.CreateEntry(context.Background(), 1, EntryInput{
+	_, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 		ActivityKindID: kindID,
 		Track:          TrackPrimary,
 		StartAt:        "2026-07-06T09:00:00Z",
@@ -213,13 +216,13 @@ func TestServiceCreateEntryRequiresRequiredGroup(t *testing.T) {
 func TestServiceCreateEntryRejectsGroupNotBoundToKind(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	boundGroupID := createTestCategoryGroup(t, service, 1, "Game", nil)
 	foreignGroupID := createTestCategoryGroup(t, service, 1, "Source", nil)
 	foreignOptionID := createTestCategoryOption(t, service, 1, foreignGroupID, "YouTube")
 	kindID := createTestActivityKind(t, service, 1, "Game", []GroupBinding{{GroupID: boundGroupID, Required: false}})
 
-	_, err := service.CreateEntry(context.Background(), 1, EntryInput{
+	_, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 		ActivityKindID: kindID,
 		Track:          TrackPrimary,
 		StartAt:        "2026-07-06T09:00:00Z",
@@ -234,7 +237,7 @@ func TestServiceCreateEntryRejectsGroupNotBoundToKind(t *testing.T) {
 func TestServiceCreateEntryRejectsOptionFromWrongGroup(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	groupAID := createTestCategoryGroup(t, service, 1, "Game", nil)
 	groupBID := createTestCategoryGroup(t, service, 1, "Source", nil)
 	optionInGroupB := createTestCategoryOption(t, service, 1, groupBID, "YouTube")
@@ -243,7 +246,7 @@ func TestServiceCreateEntryRejectsOptionFromWrongGroup(t *testing.T) {
 		{GroupID: groupBID, Required: false},
 	})
 
-	_, err := service.CreateEntry(context.Background(), 1, EntryInput{
+	_, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 		ActivityKindID: kindID,
 		Track:          TrackPrimary,
 		StartAt:        "2026-07-06T09:00:00Z",
@@ -259,13 +262,13 @@ func TestServiceCreateEntryRejectsOptionFromWrongGroup(t *testing.T) {
 func TestServiceCreateEntryRejectsTwoOptionsInSameGroup(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	groupID := createTestCategoryGroup(t, service, 1, "Game", nil)
 	optionAID := createTestCategoryOption(t, service, 1, groupID, "ATS")
 	optionBID := createTestCategoryOption(t, service, 1, groupID, "ETS2")
 	kindID := createTestActivityKind(t, service, 1, "Game", []GroupBinding{{GroupID: groupID, Required: false}})
 
-	_, err := service.CreateEntry(context.Background(), 1, EntryInput{
+	_, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 		ActivityKindID: kindID,
 		Track:          TrackPrimary,
 		StartAt:        "2026-07-06T09:00:00Z",
@@ -283,14 +286,14 @@ func TestServiceCreateEntryRejectsTwoOptionsInSameGroup(t *testing.T) {
 func TestServiceCreateEntryRejectsArchivedKindGroupAndOption(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 
 	t.Run("archived kind", func(t *testing.T) {
 		kindID := createTestActivityKind(t, service, 1, "Sleep", nil)
 		if err := service.UpdateActivityKind(context.Background(), 1, kindID, ActivityKindInput{Name: "Sleep", IsArchived: true}); err != nil {
 			t.Fatalf("UpdateActivityKind() error = %v", err)
 		}
-		_, err := service.CreateEntry(context.Background(), 1, EntryInput{
+		_, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 			ActivityKindID: kindID, Track: TrackPrimary, StartAt: "2026-07-06T09:00:00Z", EndAt: "2026-07-06T10:00:00Z",
 		})
 		if legacy.ErrorKindOf(err) != legacy.ErrorKindValidation {
@@ -305,7 +308,7 @@ func TestServiceCreateEntryRejectsArchivedKindGroupAndOption(t *testing.T) {
 		if err := service.UpdateCategoryOption(context.Background(), 1, optionID, CategoryOptionInput{GroupID: groupID, Name: "ATS2", IsArchived: true}); err != nil {
 			t.Fatalf("UpdateCategoryOption() error = %v", err)
 		}
-		_, err := service.CreateEntry(context.Background(), 1, EntryInput{
+		_, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 			ActivityKindID: kindID, Track: TrackPrimary, StartAt: "2026-07-06T09:00:00Z", EndAt: "2026-07-06T10:00:00Z",
 			Options: []EntryOption{{GroupID: groupID, OptionID: optionID}},
 		})
@@ -318,7 +321,7 @@ func TestServiceCreateEntryRejectsArchivedKindGroupAndOption(t *testing.T) {
 func TestServiceOnlyOneNonArchivedAreaGroupPerUser(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	areaKind := CategoryGroupKindArea
 
 	firstID, err := service.CreateCategoryGroup(context.Background(), 1, CategoryGroupInput{Name: "Life area", Kind: &areaKind})
@@ -343,7 +346,7 @@ func TestServiceOnlyOneNonArchivedAreaGroupPerUser(t *testing.T) {
 func TestServiceCategoryGroupArchiveBlockedWhileBoundToActiveKind(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	groupID := createTestCategoryGroup(t, service, 1, "Game", nil)
 	createTestActivityKind(t, service, 1, "Game", []GroupBinding{{GroupID: groupID, Required: false}})
 
@@ -361,10 +364,10 @@ func TestServiceCategoryGroupArchiveBlockedWhileBoundToActiveKind(t *testing.T) 
 func TestServiceRestrictsActivityKindDeleteAtRepoLevelViaForeignKey(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	kindID := createTestActivityKind(t, service, 1, "Coding", nil)
 
-	if _, err := service.CreateEntry(context.Background(), 1, EntryInput{
+	if _, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 		ActivityKindID: kindID,
 		Track:          TrackPrimary,
 		StartAt:        "2026-07-06T09:00:00Z",
@@ -382,7 +385,7 @@ func TestServiceRestrictsActivityKindDeleteAtRepoLevelViaForeignKey(t *testing.T
 func TestServiceActivityKindUpdateReplacesGroupBindings(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	groupAID := createTestCategoryGroup(t, service, 1, "A", nil)
 	groupBID := createTestCategoryGroup(t, service, 1, "B", nil)
 
@@ -407,12 +410,12 @@ func TestServiceActivityKindUpdateReplacesGroupBindings(t *testing.T) {
 func TestServiceCategoryOptionDeleteBlockedWhenUsedByEntry(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	groupID := createTestCategoryGroup(t, service, 1, "Game", nil)
 	optionID := createTestCategoryOption(t, service, 1, groupID, "ATS")
 	kindID := createTestActivityKind(t, service, 1, "Game", []GroupBinding{{GroupID: groupID, Required: true}})
 
-	if _, err := service.CreateEntry(context.Background(), 1, EntryInput{
+	if _, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 		ActivityKindID: kindID, Track: TrackPrimary, StartAt: "2026-07-06T09:00:00Z", EndAt: "2026-07-06T10:00:00Z",
 		Options: []EntryOption{{GroupID: groupID, OptionID: optionID}},
 	}); err != nil {
@@ -428,7 +431,7 @@ func TestServiceCategoryOptionDeleteBlockedWhenUsedByEntry(t *testing.T) {
 func TestServiceConcurrentOverlappingCreatesExactlyOneSucceeds(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
-	service := NewService(NewRepository(db))
+	service := newTestService(db)
 	kindID := createTestActivityKind(t, service, 1, "Coding", nil)
 
 	const attempts = 10
@@ -436,11 +439,9 @@ func TestServiceConcurrentOverlappingCreatesExactlyOneSucceeds(t *testing.T) {
 	var successCount, conflictCount int64
 	var mu sync.Mutex
 
-	for i := 0; i < attempts; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, err := service.CreateEntry(context.Background(), 1, EntryInput{
+	for range attempts {
+		wg.Go(func() {
+			_, err := service.CreateEntry(context.Background(), 1, rand.Text(), EntryInput{
 				ActivityKindID: kindID,
 				Track:          TrackPrimary,
 				StartAt:        "2026-07-06T09:00:00Z",
@@ -448,14 +449,15 @@ func TestServiceConcurrentOverlappingCreatesExactlyOneSucceeds(t *testing.T) {
 			})
 			mu.Lock()
 			defer mu.Unlock()
-			if err == nil {
+			switch {
+			case err == nil:
 				successCount++
-			} else if legacy.ErrorKindOf(err) == legacy.ErrorKindConflict {
+			case legacy.ErrorKindOf(err) == legacy.ErrorKindConflict:
 				conflictCount++
-			} else {
+			default:
 				t.Errorf("CreateEntry() unexpected error = %v", err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -494,6 +496,11 @@ func createTestCategoryOption(t *testing.T, service *Service, userID int64, grou
 	return id
 }
 
+func newTestService(db *sql.DB) *Service {
+	write := sqlite.WriteDB{DB: db}
+	return NewService(NewRepository(db, write), idempotency.NewStore(write))
+}
+
 func openTimetrackTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 
@@ -510,6 +517,23 @@ func openTimetrackTestDB(t *testing.T) *sql.DB {
 			username TEXT,
 			hashedPassword TEXT,
 			isAdmin BOOLEAN
+		);
+
+		CREATE TABLE syncOperations (
+			id TEXT PRIMARY KEY,
+			userId INTEGER NOT NULL,
+			createdAt TEXT NOT NULL,
+			resultJSON TEXT NOT NULL
+		);
+
+		CREATE TABLE auth_sessions (
+			id TEXT PRIMARY KEY,
+			secretHash BLOB NOT NULL,
+			userId INTEGER NOT NULL,
+			createdAt TEXT NOT NULL,
+			expiresAt TEXT NOT NULL,
+			renewedAt TEXT NOT NULL,
+			revokedAt TEXT
 		);
 
 		CREATE TABLE timeActivityKind (

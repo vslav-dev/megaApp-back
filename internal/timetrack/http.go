@@ -89,7 +89,7 @@ func (h *Handler) UpdateActivityKind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -105,7 +105,7 @@ func (h *Handler) UpdateActivityKind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "ActivityKind updated successfully")
+	writeSuccessMessage(w, "ActivityKind updated successfully")
 }
 
 func (h *Handler) CreateCategoryGroup(w http.ResponseWriter, r *http.Request) {
@@ -137,7 +137,7 @@ func (h *Handler) UpdateCategoryGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -153,7 +153,7 @@ func (h *Handler) UpdateCategoryGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "CategoryGroup updated successfully")
+	writeSuccessMessage(w, "CategoryGroup updated successfully")
 }
 
 func (h *Handler) DeleteCategoryGroup(w http.ResponseWriter, r *http.Request) {
@@ -163,7 +163,7 @@ func (h *Handler) DeleteCategoryGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -173,7 +173,7 @@ func (h *Handler) DeleteCategoryGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "CategoryGroup deleted successfully")
+	writeSuccessMessage(w, "CategoryGroup deleted successfully")
 }
 
 func (h *Handler) CreateCategoryOption(w http.ResponseWriter, r *http.Request) {
@@ -205,7 +205,7 @@ func (h *Handler) UpdateCategoryOption(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -221,7 +221,7 @@ func (h *Handler) UpdateCategoryOption(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "CategoryOption updated successfully")
+	writeSuccessMessage(w, "CategoryOption updated successfully")
 }
 
 func (h *Handler) DeleteCategoryOption(w http.ResponseWriter, r *http.Request) {
@@ -231,7 +231,7 @@ func (h *Handler) DeleteCategoryOption(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
@@ -241,7 +241,7 @@ func (h *Handler) DeleteCategoryOption(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "CategoryOption deleted successfully")
+	writeSuccessMessage(w, "CategoryOption deleted successfully")
 }
 
 func (h *Handler) GetEntries(w http.ResponseWriter, r *http.Request) {
@@ -272,13 +272,15 @@ func (h *Handler) CreateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var request EntryInput
-	if err := legacy.DecodeJSON(r, &request); err != nil {
-		writeAppError(w, err, http.StatusBadRequest, "Invalid request body")
+	var request struct {
+		EntryInput
+		OperationID string `json:"operationId"`
+	}
+	if !decodeEntryWrite(w, r, &request, &request.OperationID) {
 		return
 	}
 
-	createdID, err := h.service.CreateEntry(r.Context(), claims.UserID, request)
+	createdID, err := h.service.CreateEntry(r.Context(), claims.UserID, request.OperationID, request.EntryInput)
 	if err != nil {
 		writeAppError(w, err, http.StatusInternalServerError, "Failed to create entry")
 		return
@@ -294,23 +296,25 @@ func (h *Handler) UpdateEntryTime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
 
-	var request EntryTimeInput
-	if err := legacy.DecodeJSON(r, &request); err != nil {
-		writeAppError(w, err, http.StatusBadRequest, "Invalid request body")
+	var request struct {
+		EntryTimeInput
+		OperationID string `json:"operationId"`
+	}
+	if !decodeEntryWrite(w, r, &request, &request.OperationID) {
 		return
 	}
 
-	if err := h.service.UpdateEntryTime(r.Context(), claims.UserID, id, request); err != nil {
+	if err := h.service.UpdateEntryTime(r.Context(), claims.UserID, request.OperationID, id, request.EntryTimeInput); err != nil {
 		writeAppError(w, err, http.StatusInternalServerError, "Failed to update entry time")
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Entry time updated successfully")
+	writeSuccessMessage(w, "Entry time updated successfully")
 }
 
 func (h *Handler) UpdateEntrySelection(w http.ResponseWriter, r *http.Request) {
@@ -320,23 +324,25 @@ func (h *Handler) UpdateEntrySelection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
 
-	var request EntrySelectionInput
-	if err := legacy.DecodeJSON(r, &request); err != nil {
-		writeAppError(w, err, http.StatusBadRequest, "Invalid request body")
+	var request struct {
+		EntrySelectionInput
+		OperationID string `json:"operationId"`
+	}
+	if !decodeEntryWrite(w, r, &request, &request.OperationID) {
 		return
 	}
 
-	if err := h.service.UpdateEntrySelection(r.Context(), claims.UserID, id, request); err != nil {
+	if err := h.service.UpdateEntrySelection(r.Context(), claims.UserID, request.OperationID, id, request.EntrySelectionInput); err != nil {
 		writeAppError(w, err, http.StatusInternalServerError, "Failed to update entry selection")
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Entry selection updated successfully")
+	writeSuccessMessage(w, "Entry selection updated successfully")
 }
 
 func (h *Handler) DeleteEntry(w http.ResponseWriter, r *http.Request) {
@@ -346,21 +352,42 @@ func (h *Handler) DeleteEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := parseIDParam(w, r, "id")
+	id, ok := parseIDParam(w, r)
 	if !ok {
 		return
 	}
 
-	if err := h.service.DeleteEntry(r.Context(), claims.UserID, id); err != nil {
+	var request struct {
+		OperationID string `json:"operationId"`
+	}
+	if !decodeEntryWrite(w, r, &request, &request.OperationID) {
+		return
+	}
+
+	if err := h.service.DeleteEntry(r.Context(), claims.UserID, request.OperationID, id); err != nil {
 		writeAppError(w, err, http.StatusInternalServerError, "Failed to delete entry")
 		return
 	}
 
-	writeSuccessMessage(w, http.StatusOK, "Entry deleted successfully")
+	writeSuccessMessage(w, "Entry deleted successfully")
 }
 
-func parseIDParam(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
-	id, err := strconv.ParseInt(chi.URLParam(r, name), 10, 64)
+// decodeEntryWrite decodes an entry write body and requires its operationId: entry writes go
+// through the frontend sync engine, and the operationId is what makes its retries idempotent.
+func decodeEntryWrite(w http.ResponseWriter, r *http.Request, dst any, operationID *string) bool {
+	if err := legacy.DecodeJSON(r, dst); err != nil {
+		writeAppError(w, err, http.StatusBadRequest, "Invalid request body")
+		return false
+	}
+	if *operationID == "" {
+		writeError(w, http.StatusBadRequest, "operationId is required")
+		return false
+	}
+	return true
+}
+
+func parseIDParam(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil || id <= 0 {
 		writeError(w, http.StatusBadRequest, "Invalid id")
 		return 0, false
@@ -372,8 +399,8 @@ func writeSuccessData(w http.ResponseWriter, statusCode int, data any) {
 	legacy.WriteJSON(w, statusCode, map[string]any{"success": true, "data": data})
 }
 
-func writeSuccessMessage(w http.ResponseWriter, statusCode int, message string) {
-	legacy.WriteJSON(w, statusCode, map[string]any{"success": true, "message": message})
+func writeSuccessMessage(w http.ResponseWriter, message string) {
+	legacy.WriteJSON(w, http.StatusOK, map[string]any{"success": true, "message": message})
 }
 
 func writeError(w http.ResponseWriter, statusCode int, message string) {

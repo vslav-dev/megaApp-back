@@ -2,7 +2,6 @@ package jobs
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"sync/atomic"
 	"testing"
@@ -10,7 +9,7 @@ import (
 )
 
 func TestRuntimeRunsScheduledJob(t *testing.T) {
-	runtime := NewRuntime(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	runtime := NewRuntime(slog.New(slog.DiscardHandler))
 	defer func() { _ = runtime.Close() }()
 
 	triggered := make(chan struct{}, 1)
@@ -40,7 +39,7 @@ func TestRuntimeRunsScheduledJob(t *testing.T) {
 }
 
 func TestRuntimeRejectsInvalidSchedule(t *testing.T) {
-	runtime := NewRuntime(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	runtime := NewRuntime(slog.New(slog.DiscardHandler))
 	defer func() { _ = runtime.Close() }()
 
 	if err := runtime.Register("quotes", "bad schedule", func(context.Context) error { return nil }); err == nil {

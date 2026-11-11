@@ -34,6 +34,7 @@ func (h *DebugHandler) RunQuotesJob(w http.ResponseWriter, r *http.Request) {
 		"upsertedCount": result.UpsertedCount,
 		"fromISO":       result.FromISO,
 		"toISO":         result.ToISO,
-		"errors":        result.Errors,
+		"failures":      result.Failures,
+		"degraded":      result.Degraded,
 	})
 }

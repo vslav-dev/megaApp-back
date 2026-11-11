@@ -46,7 +46,7 @@ func (c *Client) UploadFile(ctx context.Context, key string, filePath string, co
 	if err != nil {
 		return fmt.Errorf("open archive file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	input := &awss3.PutObjectInput{
 		Bucket:      awssdk.String(c.bucket),

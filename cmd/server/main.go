@@ -12,6 +12,10 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	cfg, err := config.Load()
 	if err != nil {
 		panic(err)
@@ -23,7 +27,7 @@ func main() {
 	app, err := httpx.NewApp(ctx, cfg, logger)
 	if err != nil {
 		logger.Error("app_init_failed", "error", err)
-		os.Exit(1)
+		return 1
 	}
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -38,6 +42,7 @@ func main() {
 	var serveErr error
 	select {
 	case <-sigCtx.Done():
+		logger.Info("app_stopping", "cause", context.Cause(sigCtx))
 	case serveErr = <-serveErrCh:
 	}
 
@@ -53,7 +58,8 @@ func main() {
 
 	if serveErr != nil {
 		logger.Error("app_stopped_with_error", "error", serveErr)
-		os.Exit(1)
+		return 1
 	}
 	logger.Info("app_stopped")
+	return 0
 }

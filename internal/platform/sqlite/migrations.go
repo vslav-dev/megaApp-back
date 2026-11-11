@@ -4,10 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -17,7 +17,7 @@ type Migration struct {
 	SQL     string
 }
 
-func ApplyMigrations(ctx context.Context, db *sql.DB, migrationsDir string) error {
+func ApplyMigrations(ctx context.Context, db *sql.DB, migrationsDir string, logger *slog.Logger) error {
 	if err := ensureSchemaMigrationsTable(ctx, db); err != nil {
 		return err
 	}
@@ -28,23 +28,37 @@ func ApplyMigrations(ctx context.Context, db *sql.DB, migrationsDir string) erro
 	}
 
 	appliedCount := 0
+	skippedCount := 0
+	var firstSkipped, lastSkipped string
+	logSkipped := func() {
+		if skippedCount > 0 {
+			logger.Info("migrations_skipped", "count", skippedCount, "first", firstSkipped, "last", lastSkipped)
+			skippedCount = 0
+		}
+	}
 	for _, migration := range migrations {
 		applied, err := isApplied(ctx, db, migration.Version)
 		if err != nil {
 			return err
 		}
 		if applied {
-			log.Printf("migration %s already applied, skipping", migration.Name)
+			if skippedCount == 0 {
+				firstSkipped = migration.Name
+			}
+			lastSkipped = migration.Name
+			skippedCount++
 			continue
 		}
+		logSkipped()
 		if err := applyMigration(ctx, db, migration); err != nil {
 			return err
 		}
-		log.Printf("migration %s applied", migration.Name)
+		logger.Info("migration_applied", "name", migration.Name)
 		appliedCount++
 	}
+	logSkipped()
 
-	log.Printf("migrations check complete: %d total, %d newly applied", len(migrations), appliedCount)
+	logger.Info("migrations_checked", "total", len(migrations), "applied", appliedCount)
 	return nil
 }
 
@@ -67,7 +81,7 @@ func LoadMigrations(migrationsDir string) ([]Migration, error) {
 		}
 	}
 
-	sort.Strings(files)
+	slices.Sort(files)
 
 	migrations := make([]Migration, 0, len(files))
 	for _, name := range files {

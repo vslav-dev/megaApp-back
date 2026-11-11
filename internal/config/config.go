@@ -21,10 +21,10 @@ type Config struct {
 	MigrationsDir                       string
 	PublicDir                           string
 	BackupsDir                          string
-	JWTSecret                           string
+	SessionTTL                          time.Duration
+	SessionRenewWindow                  time.Duration
 	OpenRouterAPIKey                    string
 	OpenRouterModel                     string
-	OpenRouterVisionModel               string
 	OpenRouterImageModel                string
 	OpenRouterTimeout                   time.Duration
 	ImageGenerationMaxAttempts          int
@@ -63,11 +63,13 @@ type Config struct {
 	BackupStorageAccessKeyID            string
 	BackupStorageSecretAccessKey        string
 	BackupOperationTimeout              time.Duration
+	MetricsEnabled                      bool
 	MetricsServiceKey                   string
 	FlatlineBaseURL                     string
 	FlatlinePushTimeout                 time.Duration
 	FlatlinePollInterval                time.Duration
 	FlatlinePollInitialLookback         time.Duration
+	FlatlinePollMaxCatchUp              time.Duration
 	HTTPReadTimeout                     time.Duration
 	HTTPWriteTimeout                    time.Duration
 	HTTPIdleTimeout                     time.Duration
@@ -76,6 +78,8 @@ type Config struct {
 	MaxMultipartBodyBytes               int64
 	WSReadLimitBytes                    int64
 	WSWriteTimeout                      time.Duration
+	IngestSources                       []IngestSource
+	IngestKeys                          []string
 	BuildCommit                         string
 	BuildTime                           string
 	GoVersion                           string
@@ -102,10 +106,8 @@ func Load() (Config, error) {
 		MigrationsDir:                getString("MIGRATIONS_DIR", "./migrations"),
 		PublicDir:                    getString("PUBLIC_DIR", "./public"),
 		BackupsDir:                   getString("BACKUPS_DIR", "./backups"),
-		JWTSecret:                    getString("JWT_SECRET", "test-insecure-jwt-secret"),
 		OpenRouterAPIKey:             getString("OPENROUTER_API_KEY", ""),
 		OpenRouterModel:              getString("OPENROUTER_MODEL", "google/gemini-2.5-pro"),
-		OpenRouterVisionModel:        getString("OPENROUTER_VISION_MODEL", "google/gemini-2.5-flash"),
 		OpenRouterImageModel:         getString("OPENROUTER_IMAGE_MODEL", "google/gemini-2.5-flash-image"),
 		OpenAIAPIKey:                 getString("OPENAI_API_KEY", ""),
 		OpenAIEmbeddingModel:         getString("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
@@ -123,6 +125,7 @@ func Load() (Config, error) {
 		BackupStorageClass:           getString("BACKUP_STORAGE_STORAGE_CLASS", ""),
 		BackupStorageAccessKeyID:     getString("BACKUP_STORAGE_ACCESS_KEY_ID", ""),
 		BackupStorageSecretAccessKey: getString("BACKUP_STORAGE_SECRET_ACCESS_KEY", ""),
+		MetricsEnabled:               getBool("METRICS_ENABLED", true),
 		MetricsServiceKey:            getString("METRICS_SERVICE_KEY", "megaapp"),
 		FlatlineBaseURL:              getString("FLATLINE_BASE_URL", ""),
 		BuildCommit:                  buildCommit,
@@ -130,11 +133,23 @@ func Load() (Config, error) {
 		GoVersion:                    runtime.Version(),
 	}
 
-	port, err := getInt("APP_PORT", 3001)
+	port, err := getInt("APP_PORT", 3000)
 	if err != nil {
 		return Config{}, fmt.Errorf("load config: %w", err)
 	}
 	cfg.AppPort = port
+
+	sessionTTLHours, err := getInt("SESSION_TTL_HOURS", 720)
+	if err != nil {
+		return Config{}, fmt.Errorf("load config: %w", err)
+	}
+	cfg.SessionTTL = time.Duration(sessionTTLHours) * time.Hour
+
+	sessionRenewWindowHours, err := getInt("SESSION_RENEW_WINDOW_HOURS", 168)
+	if err != nil {
+		return Config{}, fmt.Errorf("load config: %w", err)
+	}
+	cfg.SessionRenewWindow = time.Duration(sessionRenewWindowHours) * time.Hour
 
 	httpReadTimeoutSeconds, err := getInt("HTTP_READ_TIMEOUT_SECONDS", 15)
 	if err != nil {
@@ -320,6 +335,17 @@ func Load() (Config, error) {
 	}
 	cfg.FlatlinePollInitialLookback = time.Duration(flatlinePollInitialLookbackSeconds) * time.Second
 
+	flatlinePollMaxCatchUpSeconds, err := getInt("FLATLINE_POLL_MAX_CATCHUP_SECONDS", 600)
+	if err != nil {
+		return Config{}, fmt.Errorf("load config: %w", err)
+	}
+	cfg.FlatlinePollMaxCatchUp = time.Duration(flatlinePollMaxCatchUpSeconds) * time.Second
+
+	cfg.IngestSources, cfg.IngestKeys, err = loadIngest()
+	if err != nil {
+		return Config{}, err
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -352,8 +378,11 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.BackupsDir) == "" {
 		return fmt.Errorf("validate config: BACKUPS_DIR is required")
 	}
-	if strings.TrimSpace(c.JWTSecret) == "" {
-		return fmt.Errorf("validate config: JWT_SECRET is required")
+	if c.SessionTTL < 0 {
+		return fmt.Errorf("validate config: SESSION_TTL_HOURS must not be negative")
+	}
+	if c.SessionRenewWindow < 0 || (c.SessionTTL > 0 && c.SessionRenewWindow >= c.SessionTTL) {
+		return fmt.Errorf("validate config: SESSION_RENEW_WINDOW_HOURS must not be negative or reach SESSION_TTL_HOURS")
 	}
 	if c.OpenRouterTimeout <= 0 {
 		return fmt.Errorf("validate config: OPENROUTER_TIMEOUT_SECONDS must be greater than 0")
@@ -430,17 +459,22 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.MetricsServiceKey) == "" {
 		return fmt.Errorf("validate config: METRICS_SERVICE_KEY is required")
 	}
-	if strings.TrimSpace(c.FlatlineBaseURL) == "" {
-		return fmt.Errorf("validate config: FLATLINE_BASE_URL is required")
-	}
-	if c.FlatlinePushTimeout <= 0 {
-		return fmt.Errorf("validate config: FLATLINE_PUSH_TIMEOUT_SECONDS must be greater than 0")
-	}
-	if c.FlatlinePollInterval <= 0 {
-		return fmt.Errorf("validate config: FLATLINE_POLL_INTERVAL_SECONDS must be greater than 0")
-	}
-	if c.FlatlinePollInitialLookback <= 0 {
-		return fmt.Errorf("validate config: FLATLINE_POLL_INITIAL_LOOKBACK_SECONDS must be greater than 0")
+	if c.MetricsEnabled {
+		if strings.TrimSpace(c.FlatlineBaseURL) == "" {
+			return fmt.Errorf("validate config: FLATLINE_BASE_URL is required")
+		}
+		if c.FlatlinePushTimeout <= 0 {
+			return fmt.Errorf("validate config: FLATLINE_PUSH_TIMEOUT_SECONDS must be greater than 0")
+		}
+		if c.FlatlinePollInterval <= 0 {
+			return fmt.Errorf("validate config: FLATLINE_POLL_INTERVAL_SECONDS must be greater than 0")
+		}
+		if c.FlatlinePollInitialLookback <= 0 {
+			return fmt.Errorf("validate config: FLATLINE_POLL_INITIAL_LOOKBACK_SECONDS must be greater than 0")
+		}
+		if c.FlatlinePollMaxCatchUp <= 0 {
+			return fmt.Errorf("validate config: FLATLINE_POLL_MAX_CATCHUP_SECONDS must be greater than 0")
+		}
 	}
 	if c.BackupJobEnabled && !c.BackupStorageEnabled {
 		return fmt.Errorf("validate config: BACKUP_STORAGE_ENABLED must be true when BACKUP_JOB_ENABLED is true")
@@ -489,9 +523,6 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("validate config: LOG_LEVEL must be one of debug, info, warn, error")
 	}
-	if c.usesInsecureJWTSecret() && !c.isTestLike() {
-		return fmt.Errorf("validate config: JWT_SECRET insecure default is allowed only in test-like environments")
-	}
 	if strings.TrimSpace(c.OpenRouterAPIKey) != "" && strings.TrimSpace(c.OpenRouterModel) == "" {
 		return fmt.Errorf("validate config: OPENROUTER_MODEL is required when OPENROUTER_API_KEY is set")
 	}
@@ -520,20 +551,6 @@ func getString(key string, fallback string) string {
 		return fallback
 	}
 	return value
-}
-
-func (c Config) isTestLike() bool {
-	switch strings.ToLower(strings.TrimSpace(c.AppEnv)) {
-	case "test", "local":
-		return true
-	default:
-		return false
-	}
-}
-
-func (c Config) usesInsecureJWTSecret() bool {
-	secret := strings.TrimSpace(c.JWTSecret)
-	return secret == "test-insecure-jwt-secret" || secret == "dev-insecure-jwt-secret"
 }
 
 func getBool(key string, fallback bool) bool {

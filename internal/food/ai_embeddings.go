@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"strings"
@@ -25,12 +26,14 @@ type OpenAIEmbeddingGeneratorConfig struct {
 	Model      string
 	Dimensions int
 	Timeout    time.Duration
+	Logger     *slog.Logger
 }
 
 type OpenAIEmbeddingGenerator struct {
 	client     *openai.Client
 	model      string
 	dimensions int
+	logger     *slog.Logger
 }
 
 type embeddingRequest struct {
@@ -65,16 +68,29 @@ func NewOpenAIEmbeddingGenerator(cfg OpenAIEmbeddingGeneratorConfig) (*OpenAIEmb
 		option.WithHTTPClient(httpClient),
 	)
 
-	return &OpenAIEmbeddingGenerator{client: &client, model: cfg.Model, dimensions: cfg.Dimensions}, nil
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	return &OpenAIEmbeddingGenerator{client: &client, model: cfg.Model, dimensions: cfg.Dimensions, logger: logger}, nil
 }
 
 func (g *OpenAIEmbeddingGenerator) GenerateEmbedding(ctx context.Context, text string) ([]float64, error) {
 	request := embeddingRequest{Model: g.model, Input: strings.TrimSpace(text), Dimensions: g.dimensions}
+	start := time.Now()
 	var response embeddingResponse
-	if err := g.client.Post(ctx, "embeddings", request, &response); err != nil {
+	err := g.client.Post(ctx, "embeddings", request, &response)
+	duration := time.Since(start)
+	if err != nil {
+		g.logger.Error("openai embedding request failed", "model", g.model, "duration", duration, "textLength", len(text), "error", err)
 		return nil, fmt.Errorf("openai embedding request failed: %w", err)
 	}
+	if duration > 10*time.Second {
+		g.logger.Warn("openai embedding request was slow", "model", g.model, "duration", duration)
+	}
 	if len(response.Data) == 0 || len(response.Data[0].Embedding) == 0 {
+		g.logger.Error("openai returned empty embedding", "model", g.model, "duration", duration, "textLength", len(text))
 		return nil, errors.New("openai returned empty embedding")
 	}
 	return response.Data[0].Embedding, nil

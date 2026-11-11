@@ -6,22 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"megaapp-back/internal/platform/sqlite"
 )
 
 var ErrOverlap = errors.New("time entry overlaps an existing entry on the same track")
 
 type Repository struct {
-	db *sql.DB
+	db    *sql.DB
+	write sqlite.WriteDB
 }
 
-type txRunner interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
-func NewRepository(db *sql.DB) *Repository {
-	return &Repository{db: db}
+func NewRepository(read *sql.DB, write sqlite.WriteDB) *Repository {
+	return &Repository{db: read, write: write}
 }
 
 // ---------- ActivityKind ----------
@@ -74,7 +71,7 @@ func (r *Repository) CreateActivityKind(ctx context.Context, userID int64, input
 	if err != nil {
 		return 0, err
 	}
-	result, err := r.db.ExecContext(ctx, `
+	result, err := r.write.ExecContext(ctx, `
 		INSERT INTO timeActivityKind (userId, name, groupBindingsJson, isArchived, createdAt, updatedAt)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`, userID, input.Name, bindingsJSON, boolToInt64(input.IsArchived), now, now)
@@ -93,7 +90,7 @@ func (r *Repository) UpdateActivityKind(ctx context.Context, userID int64, id in
 	if err != nil {
 		return err
 	}
-	result, err := r.db.ExecContext(ctx, `
+	result, err := r.write.ExecContext(ctx, `
 		UPDATE timeActivityKind
 		SET name = ?, groupBindingsJson = ?, isArchived = ?, updatedAt = ?
 		WHERE id = ? AND userId = ?
@@ -157,7 +154,7 @@ func (r *Repository) GetCategoryGroupByID(ctx context.Context, userID int64, id 
 }
 
 func (r *Repository) CreateCategoryGroup(ctx context.Context, userID int64, input CategoryGroupInput, now string) (int64, error) {
-	result, err := r.db.ExecContext(ctx, `
+	result, err := r.write.ExecContext(ctx, `
 		INSERT INTO timeCategoryGroup (userId, name, kind, isArchived, createdAt, updatedAt)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`, userID, input.Name, valueOrNil(input.Kind), boolToInt64(input.IsArchived), now, now)
@@ -172,7 +169,7 @@ func (r *Repository) CreateCategoryGroup(ctx context.Context, userID int64, inpu
 }
 
 func (r *Repository) UpdateCategoryGroup(ctx context.Context, userID int64, id int64, input CategoryGroupInput, now string) error {
-	result, err := r.db.ExecContext(ctx, `
+	result, err := r.write.ExecContext(ctx, `
 		UPDATE timeCategoryGroup
 		SET name = ?, kind = ?, isArchived = ?, updatedAt = ?
 		WHERE id = ? AND userId = ?
@@ -191,7 +188,7 @@ func (r *Repository) UpdateCategoryGroup(ctx context.Context, userID int64, id i
 }
 
 func (r *Repository) DeleteCategoryGroup(ctx context.Context, userID int64, id int64) error {
-	result, err := r.db.ExecContext(ctx, `
+	result, err := r.write.ExecContext(ctx, `
 		DELETE FROM timeCategoryGroup
 		WHERE id = ? AND userId = ?
 	`, id, userID)
@@ -289,7 +286,7 @@ func (r *Repository) GetCategoryOptionByID(ctx context.Context, userID int64, id
 }
 
 func (r *Repository) CreateCategoryOption(ctx context.Context, userID int64, input CategoryOptionInput, now string) (int64, error) {
-	result, err := r.db.ExecContext(ctx, `
+	result, err := r.write.ExecContext(ctx, `
 		INSERT INTO timeCategoryOption (userId, groupId, name, color, isArchived, createdAt, updatedAt)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, userID, input.GroupID, input.Name, valueOrNil(input.Color), boolToInt64(input.IsArchived), now, now)
@@ -304,7 +301,7 @@ func (r *Repository) CreateCategoryOption(ctx context.Context, userID int64, inp
 }
 
 func (r *Repository) UpdateCategoryOption(ctx context.Context, userID int64, id int64, input CategoryOptionInput, now string) error {
-	result, err := r.db.ExecContext(ctx, `
+	result, err := r.write.ExecContext(ctx, `
 		UPDATE timeCategoryOption
 		SET groupId = ?, name = ?, color = ?, isArchived = ?, updatedAt = ?
 		WHERE id = ? AND userId = ?
@@ -323,7 +320,7 @@ func (r *Repository) UpdateCategoryOption(ctx context.Context, userID int64, id 
 }
 
 func (r *Repository) DeleteCategoryOption(ctx context.Context, userID int64, id int64) error {
-	result, err := r.db.ExecContext(ctx, `
+	result, err := r.write.ExecContext(ctx, `
 		DELETE FROM timeCategoryOption
 		WHERE id = ? AND userId = ?
 	`, id, userID)
@@ -502,28 +499,16 @@ func (r *Repository) listEntryOptions(ctx context.Context, entryID int64) ([]Ent
 	return result, nil
 }
 
-// CreateEntry checks for an overlap and inserts the entry + its options
-// atomically — the check and the write happen inside the same transaction so
-// the whole operation is all-or-nothing (call is expected to be serialized by
-// the caller's mutex, see Service).
-func (r *Repository) CreateEntry(ctx context.Context, userID int64, input EntryInput, now string) (id int64, err error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin create entry: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
+// CreateEntry checks for an overlap and inserts the entry + its options inside the caller's
+// write transaction: the single write connection serializes it against every other write, so
+// the check and the insert can't interleave with a concurrent request.
+func (r *Repository) CreateEntry(ctx context.Context, tx *sql.Tx, userID int64, input EntryInput, now string) (int64, error) {
 	overlaps, err := hasOverlap(ctx, tx, userID, input.Track, input.StartAt, input.EndAt, nil)
 	if err != nil {
 		return 0, err
 	}
 	if overlaps {
-		err = ErrOverlap
-		return 0, err
+		return 0, ErrOverlap
 	}
 
 	result, err := tx.ExecContext(ctx, `
@@ -533,17 +518,13 @@ func (r *Repository) CreateEntry(ctx context.Context, userID int64, input EntryI
 	if err != nil {
 		return 0, fmt.Errorf("create entry: %w", err)
 	}
-	id, err = result.LastInsertId()
+	id, err := result.LastInsertId()
 	if err != nil {
 		return 0, fmt.Errorf("entry last insert id: %w", err)
 	}
 
-	if err = insertEntryOptions(ctx, tx, id, input.Options); err != nil {
+	if err := insertEntryOptions(ctx, tx, id, input.Options); err != nil {
 		return 0, err
-	}
-
-	if err = tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit create entry: %w", err)
 	}
 	return id, nil
 }
@@ -551,24 +532,13 @@ func (r *Repository) CreateEntry(ctx context.Context, userID int64, input EntryI
 // UpdateEntryTime checks for an overlap (excluding itself) and writes only
 // track/startAt/endAt atomically — semantic selection (activityKindId,
 // options) is left untouched, see implementation plan ("Update time").
-func (r *Repository) UpdateEntryTime(ctx context.Context, userID int64, entryID int64, input EntryTimeInput, now string) (err error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin update entry time: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
+func (r *Repository) UpdateEntryTime(ctx context.Context, tx *sql.Tx, userID int64, entryID int64, input EntryTimeInput, now string) error {
 	overlaps, err := hasOverlap(ctx, tx, userID, input.Track, input.StartAt, input.EndAt, &entryID)
 	if err != nil {
 		return err
 	}
 	if overlaps {
-		err = ErrOverlap
-		return err
+		return ErrOverlap
 	}
 
 	result, err := tx.ExecContext(ctx, `
@@ -584,12 +554,7 @@ func (r *Repository) UpdateEntryTime(ctx context.Context, userID int64, entryID 
 		return fmt.Errorf("update entry time rows affected: %w", err)
 	}
 	if changedRows == 0 {
-		err = sql.ErrNoRows
-		return err
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("commit update entry time: %w", err)
+		return sql.ErrNoRows
 	}
 	return nil
 }
@@ -597,17 +562,7 @@ func (r *Repository) UpdateEntryTime(ctx context.Context, userID int64, entryID 
 // UpdateEntrySelection replaces activityKindId and the full set of options —
 // track/startAt/endAt are left untouched, see implementation plan
 // ("Update selection"). No overlap check: the interval doesn't change.
-func (r *Repository) UpdateEntrySelection(ctx context.Context, userID int64, entryID int64, input EntrySelectionInput, now string) (err error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin update entry selection: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
+func (r *Repository) UpdateEntrySelection(ctx context.Context, tx *sql.Tx, userID int64, entryID int64, input EntrySelectionInput, now string) error {
 	result, err := tx.ExecContext(ctx, `
 		UPDATE timeEntry
 		SET activityKindId = ?, updatedAt = ?
@@ -621,22 +576,13 @@ func (r *Repository) UpdateEntrySelection(ctx context.Context, userID int64, ent
 		return fmt.Errorf("update entry selection rows affected: %w", err)
 	}
 	if changedRows == 0 {
-		err = sql.ErrNoRows
-		return err
+		return sql.ErrNoRows
 	}
 
-	if _, err = tx.ExecContext(ctx, `DELETE FROM timeEntryOption WHERE entryId = ?`, entryID); err != nil {
-		err = fmt.Errorf("clear entry options: %w", err)
-		return err
+	if _, err := tx.ExecContext(ctx, `DELETE FROM timeEntryOption WHERE entryId = ?`, entryID); err != nil {
+		return fmt.Errorf("clear entry options: %w", err)
 	}
-	if err = insertEntryOptions(ctx, tx, entryID, input.Options); err != nil {
-		return err
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("commit update entry selection: %w", err)
-	}
-	return nil
+	return insertEntryOptions(ctx, tx, entryID, input.Options)
 }
 
 func insertEntryOptions(ctx context.Context, tx *sql.Tx, entryID int64, options []EntryOption) error {
@@ -651,8 +597,8 @@ func insertEntryOptions(ctx context.Context, tx *sql.Tx, entryID int64, options 
 	return nil
 }
 
-func (r *Repository) DeleteEntry(ctx context.Context, userID int64, entryID int64) error {
-	result, err := r.db.ExecContext(ctx, `
+func (r *Repository) DeleteEntry(ctx context.Context, tx *sql.Tx, userID int64, entryID int64) error {
+	result, err := tx.ExecContext(ctx, `
 		DELETE FROM timeEntry
 		WHERE id = ? AND userId = ?
 	`, entryID, userID)
@@ -672,17 +618,17 @@ func (r *Repository) DeleteEntry(ctx context.Context, userID int64, entryID int6
 // hasOverlap reports whether an entry of the same userId+track intersects
 // [startAt, endAt) (endAt exclusive, per concept). excludeID skips a row
 // (the entry being updated) from the check.
-func hasOverlap(ctx context.Context, runner txRunner, userID int64, track Track, startAt string, endAt string, excludeID *int64) (bool, error) {
+func hasOverlap(ctx context.Context, tx *sql.Tx, userID int64, track Track, startAt string, endAt string, excludeID *int64) (bool, error) {
 	var count int64
 	var err error
 	if excludeID == nil {
-		err = runner.QueryRowContext(ctx, `
+		err = tx.QueryRowContext(ctx, `
 			SELECT COUNT(*)
 			FROM timeEntry
 			WHERE userId = ? AND track = ? AND startAt < ? AND endAt > ?
 		`, userID, track, endAt, startAt).Scan(&count)
 	} else {
-		err = runner.QueryRowContext(ctx, `
+		err = tx.QueryRowContext(ctx, `
 			SELECT COUNT(*)
 			FROM timeEntry
 			WHERE userId = ? AND track = ? AND startAt < ? AND endAt > ? AND id != ?

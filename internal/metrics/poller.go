@@ -1,9 +1,10 @@
 package metrics
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
-	"sort"
+	"slices"
 	"time"
 
 	clockplatform "megaapp-back/internal/platform/clock"
@@ -19,6 +20,8 @@ type Poller struct {
 	realtime    realtimeBroadcaster
 	adminLister AdminLister
 	interval    time.Duration
+	maxCatchUp  time.Duration
+	clock       clockplatform.Clock
 	logger      *slog.Logger
 
 	cursor     int64
@@ -30,12 +33,14 @@ type Poller struct {
 	done   chan struct{}
 }
 
-func NewPoller(client *FlatlineClient, realtime realtimeBroadcaster, adminLister AdminLister, interval time.Duration, initialLookback time.Duration, clk clockplatform.Clock, logger *slog.Logger) *Poller {
+func NewPoller(client *FlatlineClient, realtime realtimeBroadcaster, adminLister AdminLister, interval time.Duration, initialLookback time.Duration, maxCatchUp time.Duration, clk clockplatform.Clock, logger *slog.Logger) *Poller {
 	return &Poller{
 		client:      client,
 		realtime:    realtime,
 		adminLister: adminLister,
 		interval:    interval,
+		maxCatchUp:  maxCatchUp,
+		clock:       clk,
 		logger:      logger,
 		cursor:      initialPollerCursor(clk.Now(), initialLookback),
 		latest:      make(map[string]map[string]float64),
@@ -69,6 +74,9 @@ func (p *Poller) Start() {
 }
 
 func (p *Poller) Close() error {
+	if p == nil {
+		return nil
+	}
 	if p.cancel != nil {
 		p.cancel()
 	}
@@ -79,7 +87,13 @@ func (p *Poller) Close() error {
 }
 
 func (p *Poller) tick(ctx context.Context) {
-	points, err := p.client.Since(ctx, p.cursor, 0, 0, 0)
+	// Bounds how far back a stale cursor (e.g. after a Flatline outage) can reach in a
+	// single tick, so a long gap can't push one oversized METRICS_UPDATE over the shared
+	// WebSocket connection — see plans/15, "Ход выполнения (2026-07-31)". Anything older
+	// than this window is left to the client's own REST /api/metrics/history catch-up.
+	catchUpFloor := p.clock.Now().Add(-p.maxCatchUp).Unix()
+
+	points, err := p.client.Since(ctx, p.cursor, catchUpFloor, catchUpFloor, catchUpFloor)
 	if err != nil {
 		p.logger.Warn("metrics_poll_failed", "err", err)
 		return
@@ -141,8 +155,8 @@ func (p *Poller) buildLatestSnapshot() LatestSnapshot {
 			Metrics:    metrics,
 		})
 	}
-	sort.Slice(services, func(i, j int) bool {
-		return services[i].Service < services[j].Service
+	slices.SortFunc(services, func(a, b ServiceLatest) int {
+		return cmp.Compare(a.Service, b.Service)
 	})
 	return LatestSnapshot{Services: services}
 }

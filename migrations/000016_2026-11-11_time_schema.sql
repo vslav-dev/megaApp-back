@@ -1,8 +1,3 @@
-DROP TABLE IF EXISTS timeActivityCategory;
-DROP TABLE IF EXISTS timeEntry;
-DROP TABLE IF EXISTS timeCategory;
-DROP TABLE IF EXISTS timeActivity;
-
 CREATE TABLE IF NOT EXISTS timeActivityKind (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     userId INTEGER NOT NULL,
@@ -62,5 +57,3 @@ CREATE TABLE IF NOT EXISTS timeEntryOption (
     FOREIGN KEY (groupId) REFERENCES timeCategoryGroup(id) ON DELETE RESTRICT,
     FOREIGN KEY (optionId) REFERENCES timeCategoryOption(id) ON DELETE RESTRICT
 );
-
-ALTER TABLE settings ADD COLUMN selectedChapterTime BOOLEAN;

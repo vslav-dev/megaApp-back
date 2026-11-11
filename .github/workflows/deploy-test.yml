@@ -17,6 +17,7 @@ jobs:
     with:
       service-name: 'megatest'
       server-path: '/root/megatest'
+      build-tags: 'swagger'
       commit_sha: ${{ github.event.inputs.commit_sha || '' }}
     secrets:
       HOST: ${{ secrets.HOST }}

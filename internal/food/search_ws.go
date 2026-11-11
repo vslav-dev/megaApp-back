@@ -10,6 +10,7 @@ import (
 func NewSearchWSHandler(service *Service, clk clockplatform.Clock) ws.MessageHandler {
 	return func(client *ws.Client, message map[string]any) error {
 		query, _ := message["query"].(string)
+		scope, _ := message["scope"].(string)
 		sequenceNumber := int64(0)
 		switch typed := message["sequenceNumber"].(type) {
 		case float64:
@@ -20,7 +21,7 @@ func NewSearchWSHandler(service *Service, clk clockplatform.Clock) ws.MessageHan
 			sequenceNumber = int64(typed)
 		}
 
-		ids, err := service.SearchCatalogueRealtime(context.Background(), query)
+		ids, appliedScope, err := service.SearchCatalogueRealtime(context.Background(), client.UserID(), query, SearchScope(scope))
 		if err != nil {
 			return err
 		}
@@ -29,6 +30,7 @@ func NewSearchWSHandler(service *Service, clk clockplatform.Clock) ws.MessageHan
 			"type": "SEARCH_RESULTS",
 			"payload": map[string]any{
 				"query":          query,
+				"scope":          appliedScope,
 				"catalogueIds":   ids,
 				"timestamp":      clk.Now().UnixMilli(),
 				"sequenceNumber": sequenceNumber,

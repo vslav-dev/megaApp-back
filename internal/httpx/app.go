@@ -2,7 +2,6 @@ package httpx
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"log/slog"
 	"net"
@@ -13,7 +12,10 @@ import (
 	"megaapp-back/internal/backup"
 	"megaapp-back/internal/config"
 	"megaapp-back/internal/food"
+	"megaapp-back/internal/httpx/legacy"
+	"megaapp-back/internal/ingest"
 	"megaapp-back/internal/jobs"
+	"megaapp-back/internal/metrics"
 	"megaapp-back/internal/money"
 	clockplatform "megaapp-back/internal/platform/clock"
 	sqliteplatform "megaapp-back/internal/platform/sqlite"
@@ -42,6 +44,7 @@ func NewApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, 
 }
 
 func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger, clk clockplatform.Clock) (*App, error) {
+	legacy.SetLogger(logger)
 	observer := NoopObserver{}
 
 	db, err := sqliteplatform.Open(ctx, cfg.DatabasePath)
@@ -49,18 +52,25 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger, clk clo
 		return nil, err
 	}
 
-	if err := sqliteplatform.ApplyMigrations(ctx, db.SQL(), cfg.MigrationsDir); err != nil {
+	if err := sqliteplatform.ApplyMigrations(ctx, db.SQL(), cfg.MigrationsDir, logger); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 
 	jobRuntime := jobs.NewRuntime(logger)
 
-	authModule := buildAuthModule(db.SQL(), cfg)
-	settingsModule := buildSettingsModule(db.SQL())
-	moneyModule := buildMoneyModule(db.SQL())
-	timetrackModule := buildTimetrackModule(db.SQL())
-	wsModule := buildWSModule(cfg, authModule.service)
+	authModule := buildAuthModule(db.Read(), db.Write(), cfg)
+	wsModule := buildWSModule(cfg, authModule.service, logger)
+	settingsModule := buildSettingsModule(db.Read(), db.Write(), wsModule.hub)
+	moneyModule := buildMoneyModule(db.Read(), db.Write())
+	timetrackModule := buildTimetrackModule(db.Read(), db.Write())
+	ingestModule := buildIngestModule(cfg, logger)
+	authModule.handler.SetSessionRevoker(func(sessionID string) {
+		wsModule.hub.CloseSession(sessionID, 4001, "Session revoked")
+	})
+	authModule.handler.SetSessionRenewer(func(sessionID string) {
+		wsModule.hub.CloseSession(sessionID, 4003, "Session renewed")
+	})
 	metricsModule, err := buildMetricsModule(cfg, logger, wsModule.hub, authModule.service, clk, jobRuntime)
 	if err != nil {
 		_ = wsModule.hub.Close()
@@ -68,25 +78,28 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger, clk clo
 		_ = db.Close()
 		return nil, err
 	}
-	quotesModule, err := buildQuotesModule(db.SQL(), cfg, logger, clk, jobRuntime)
+	quotesModule, err := buildQuotesModule(db.Read(), db.Write(), cfg, logger, clk, jobRuntime)
 	if err != nil {
 		_ = metricsModule.poller.Close()
+		_ = metricsModule.processSampler.Close()
 		_ = wsModule.hub.Close()
 		_ = jobRuntime.Close()
 		_ = db.Close()
 		return nil, err
 	}
-	backupModule, err := buildBackupModule(db.SQL(), cfg, logger, clk, jobRuntime, metricsModule.service)
+	backupModule, err := buildBackupModule(db.Write(), cfg, logger, clk, jobRuntime, metricsModule.service)
 	if err != nil {
 		_ = metricsModule.poller.Close()
+		_ = metricsModule.processSampler.Close()
 		_ = wsModule.hub.Close()
 		_ = jobRuntime.Close()
 		_ = db.Close()
 		return nil, err
 	}
-	foodModule, err := buildFoodModule(db.SQL(), cfg, logger, wsModule.hub, clk, metricsModule.service)
+	foodModule, err := buildFoodModule(db.Read(), db.Write(), cfg, logger, wsModule.hub, authModule.service, clk, metricsModule.service)
 	if err != nil {
 		_ = metricsModule.poller.Close()
+		_ = metricsModule.processSampler.Close()
 		_ = wsModule.hub.Close()
 		_ = jobRuntime.Close()
 		_ = db.Close()
@@ -108,6 +121,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger, clk clo
 				_ = background.Close()
 			}
 			_ = metricsModule.poller.Close()
+			_ = metricsModule.processSampler.Close()
 			_ = wsModule.hub.Close()
 			_ = jobRuntime.Close()
 			_ = db.Close()
@@ -117,24 +131,32 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger, clk clo
 	jobRuntime.Start()
 
 	router := chiRouter(logger, observer, cfg.MaxRequestBodyBytes, cfg.MaxMultipartBodyBytes)
-	router.Get("/health", HealthHandler())
-	router.Get("/readiness", ReadinessHandler(db.PingContext))
-	router.Get("/build-info", BuildInfoHandler(cfg))
+	router.Get("/api/health", HealthHandler())
+	router.Get("/api/readiness", ReadinessHandler(db.PingContext))
+	router.Get("/api/build-info", BuildInfoHandler(cfg))
 	router.Get("/api/debug/commit-info", CommitInfoHandler(cfg))
 
 	auth.RegisterRoutes(router, authModule.handler)
 	settings.RegisterRoutes(router, authModule.service, settingsModule.handler)
 	money.RegisterRoutes(router, authModule.service, moneyModule.handler)
 	timetrack.RegisterRoutes(router, authModule.service, timetrackModule.handler)
+	ingest.RegisterRoutes(router, authModule.service, ingestModule.handler)
 	food.RegisterRoutes(router, authModule.service, foodModule.readHandler)
 	food.RegisterWriteRoutes(router, authModule.service, foodModule.writeHandler)
 	food.RegisterCatalogueRoutes(router, authModule.service, foodModule.catalogueHandler)
 	food.RegisterImageRoutes(router, foodModule.imageHandler)
-	food.RegisterLabRoutes(router, foodModule.labHandler)
-	food.RegisterDebugRoutes(router, foodModule.debugHandler)
-	quotes.RegisterDebugRoutes(router, quotesModule.debugHandler)
-	backup.RegisterDebugRoutes(router, backupModule.debugHandler)
+	router.Group(func(r chi.Router) {
+		r.Use(ServerOnlyMiddleware)
+		food.RegisterLabRoutes(r, foodModule.labHandler)
+		food.RegisterDebugRoutes(r, foodModule.debugHandler)
+		quotes.RegisterDebugRoutes(r, quotesModule.debugHandler)
+		backup.RegisterDebugRoutes(r, backupModule.debugHandler)
+	})
+	if metricsModule.historyHandler != nil {
+		metrics.RegisterRoutes(router, authModule.service, metricsModule.historyHandler)
+	}
 	ws.RegisterRoutes(router, wsModule.handler)
+	registerSwagger(router)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddress(),
@@ -151,7 +173,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger, clk clo
 		Observer:    observer,
 		DB:          db,
 		WSHub:       wsModule.hub,
-		Backgrounds: append(foodModule.backgrounds, jobRuntime, metricsModule.poller),
+		Backgrounds: append(foodModule.backgrounds, jobRuntime, metricsModule.poller, metricsModule.processSampler, ingestModule.handler),
 		Handler:     router,
 		Server:      server,
 	}, nil
@@ -160,7 +182,6 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger, clk clo
 func chiRouter(logger *slog.Logger, observer Observer, maxRequestBodyBytes int64, maxMultipartBodyBytes int64) chi.Router {
 	router := chi.NewRouter()
 	router.Use(chimiddleware.RequestID)
-	router.Use(chimiddleware.RealIP)
 	router.Use(chimiddleware.Recoverer)
 	router.Use(RequestBodyLimitMiddleware(maxRequestBodyBytes, maxMultipartBodyBytes))
 	router.Use(LoggingMiddleware(logger, observer))
@@ -207,8 +228,4 @@ func (a *App) Shutdown(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
-}
-
-func (a *App) SQLDB() *sql.DB {
-	return a.DB.SQL()
 }

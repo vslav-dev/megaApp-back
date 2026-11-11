@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -77,12 +78,7 @@ func (s *Service) IsAdmin(ctx context.Context, userID int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	for _, adminUserID := range adminUserIDs {
-		if adminUserID == userID {
-			return true, nil
-		}
-	}
-	return false, nil
+	return slices.Contains(adminUserIDs, userID), nil
 }
 
 func (s *Service) AdminUserIDs(ctx context.Context) ([]int64, error) {

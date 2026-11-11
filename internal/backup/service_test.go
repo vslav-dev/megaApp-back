@@ -8,8 +8,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
+
+	"megaapp-back/internal/platform/sqlite"
 
 	_ "modernc.org/sqlite"
 )
@@ -23,6 +26,7 @@ func (c fixedClock) Now() time.Time {
 }
 
 type fakeUploader struct {
+	mu           sync.Mutex
 	key          string
 	contentType  string
 	storageClass string
@@ -31,6 +35,8 @@ type fakeUploader struct {
 }
 
 func (u *fakeUploader) UploadFile(_ context.Context, key string, filePath string, contentType string, storageClass string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	u.key = key
 	u.contentType = contentType
 	u.storageClass = storageClass
@@ -45,12 +51,18 @@ func (u *fakeUploader) UploadFile(_ context.Context, key string, filePath string
 	return nil
 }
 
+func (u *fakeUploader) Key() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.key
+}
+
 func TestServiceRunCreatesUploadsAndCleansBackup(t *testing.T) {
 	db, dbPath := openBackupTestDB(t)
 	seedBackupTestDB(t, db)
 	backupsDir := filepath.Join(t.TempDir(), "backups")
 	uploader := &fakeUploader{}
-	service := NewService(db, Config{
+	service := NewService(sqlite.WriteDB{DB: db}, Config{
 		DatabaseName:   "megaapp",
 		DatabaseEnv:    "test",
 		BackupsDir:     backupsDir,
@@ -62,7 +74,7 @@ func TestServiceRunCreatesUploadsAndCleansBackup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if result.UploadedKey != "test/megaapp-test-2026-07-20T10-30-00Z.zip" {
+	if result.UploadedKey != "megaapp-test-2026-07-20T10-30-00Z.zip" {
 		t.Fatalf("UploadedKey = %q", result.UploadedKey)
 	}
 	if !result.CleanedUp {
@@ -102,7 +114,7 @@ func TestServiceRunCleansFilesAfterUploadFailure(t *testing.T) {
 	db, _ := openBackupTestDB(t)
 	seedBackupTestDB(t, db)
 	backupsDir := filepath.Join(t.TempDir(), "backups")
-	service := NewService(db, Config{
+	service := NewService(sqlite.WriteDB{DB: db}, Config{
 		DatabaseName:   "megaapp",
 		DatabaseEnv:    "test",
 		BackupsDir:     backupsDir,
@@ -124,7 +136,7 @@ func TestServiceRunCleansFilesAfterUploadFailure(t *testing.T) {
 
 func TestServiceRejectsDisabledStorage(t *testing.T) {
 	db, _ := openBackupTestDB(t)
-	service := NewService(db, Config{StorageEnabled: false}, fixedClock{now: time.Now().UTC()}, nil, &fakeUploader{})
+	service := NewService(sqlite.WriteDB{DB: db}, Config{StorageEnabled: false}, fixedClock{now: time.Now().UTC()}, nil, &fakeUploader{})
 	if _, err := service.Run(context.Background()); err == nil {
 		t.Fatal("Run() error = nil, want error")
 	}

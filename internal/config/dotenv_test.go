@@ -9,8 +9,8 @@ import (
 func TestLoadEnvFilesUsesDotEnvWhenPresent(t *testing.T) {
 	tempDir := t.TempDir()
 	writeEnvFile(t, filepath.Join(tempDir, ".env"), "APP_ENV=prod\nAPP_PORT=3001\n")
-	writeEnvFile(t, filepath.Join(tempDir, ".env.prod"), "APP_PORT=9999\nJWT_SECRET=prod-secret\n")
-	unsetEnv(t, "APP_ENV", "APP_PORT", "JWT_SECRET")
+	writeEnvFile(t, filepath.Join(tempDir, ".env.prod"), "APP_PORT=9999\nENV_SOURCE=prod\n")
+	unsetEnv(t, "APP_ENV", "APP_PORT", "ENV_SOURCE")
 	chdirForTest(t, tempDir)
 
 	if err := LoadEnvFiles(); err != nil {
@@ -20,15 +20,15 @@ func TestLoadEnvFilesUsesDotEnvWhenPresent(t *testing.T) {
 	if got := os.Getenv("APP_PORT"); got != "3001" {
 		t.Fatalf("APP_PORT = %q, want 3001", got)
 	}
-	if got := os.Getenv("JWT_SECRET"); got != "" {
-		t.Fatalf("JWT_SECRET = %q, want empty", got)
+	if got := os.Getenv("ENV_SOURCE"); got != "" {
+		t.Fatalf("ENV_SOURCE = %q, want empty", got)
 	}
 }
 
 func TestLoadEnvFilesFallsBackToDotEnvTestWhenDotEnvMissing(t *testing.T) {
 	tempDir := t.TempDir()
-	writeEnvFile(t, filepath.Join(tempDir, ".env.test"), "APP_PORT=3001\nJWT_SECRET=test-secret\n")
-	unsetEnv(t, "APP_ENV", "APP_PORT", "JWT_SECRET")
+	writeEnvFile(t, filepath.Join(tempDir, ".env.test"), "APP_PORT=3001\nENV_SOURCE=test\n")
+	unsetEnv(t, "APP_ENV", "APP_PORT", "ENV_SOURCE")
 	chdirForTest(t, tempDir)
 
 	if err := LoadEnvFiles(); err != nil {
@@ -38,15 +38,15 @@ func TestLoadEnvFilesFallsBackToDotEnvTestWhenDotEnvMissing(t *testing.T) {
 	if got := os.Getenv("APP_PORT"); got != "3001" {
 		t.Fatalf("APP_PORT = %q, want 3001", got)
 	}
-	if got := os.Getenv("JWT_SECRET"); got != "test-secret" {
-		t.Fatalf("JWT_SECRET = %q, want test-secret", got)
+	if got := os.Getenv("ENV_SOURCE"); got != "test" {
+		t.Fatalf("ENV_SOURCE = %q, want test", got)
 	}
 }
 
 func TestLoadEnvFilesFallsBackToDotEnvProdWhenDotEnvAndDotEnvTestMissing(t *testing.T) {
 	tempDir := t.TempDir()
-	writeEnvFile(t, filepath.Join(tempDir, ".env.prod"), "APP_PORT=3000\nJWT_SECRET=prod-secret\n")
-	unsetEnv(t, "APP_ENV", "APP_PORT", "JWT_SECRET")
+	writeEnvFile(t, filepath.Join(tempDir, ".env.prod"), "APP_PORT=3000\nENV_SOURCE=prod\n")
+	unsetEnv(t, "APP_ENV", "APP_PORT", "ENV_SOURCE")
 	chdirForTest(t, tempDir)
 
 	if err := LoadEnvFiles(); err != nil {
@@ -56,8 +56,8 @@ func TestLoadEnvFilesFallsBackToDotEnvProdWhenDotEnvAndDotEnvTestMissing(t *test
 	if got := os.Getenv("APP_PORT"); got != "3000" {
 		t.Fatalf("APP_PORT = %q, want 3000", got)
 	}
-	if got := os.Getenv("JWT_SECRET"); got != "prod-secret" {
-		t.Fatalf("JWT_SECRET = %q, want prod-secret", got)
+	if got := os.Getenv("ENV_SOURCE"); got != "prod" {
+		t.Fatalf("ENV_SOURCE = %q, want prod", got)
 	}
 }
 

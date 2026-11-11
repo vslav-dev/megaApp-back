@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
-	"time"
 
 	"megaapp-back/internal/auth"
+	"megaapp-back/internal/platform/sqlite"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -18,53 +18,54 @@ func TestTimetrackRoutesCrud(t *testing.T) {
 	db := openTimetrackTestDB(t)
 	insertTimetrackTestUser(t, db, 1, "alice")
 
-	authRepo := auth.NewRepository(db)
-	tokenManager := auth.NewTokenManager("test-secret", time.Hour, 24*time.Hour)
-	authService := auth.NewService(authRepo, tokenManager)
-	handler := NewHandler(NewService(NewRepository(db)))
+	authRepo := auth.NewRepository(db, sqlite.WriteDB{DB: db})
+	authService := auth.NewService(authRepo, auth.SessionConfig{})
+	handler := NewHandler(newTestService(db))
 
 	router := chi.NewRouter()
 	RegisterRoutes(router, authService, handler)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
-	tokens, err := tokenManager.Issue(auth.TokenClaims{UserID: 1, Username: "alice"})
+	session, err := authService.CreateSession(t.Context(), 1)
 	if err != nil {
-		t.Fatalf("Issue() error = %v", err)
+		t.Fatalf("CreateSession() error = %v", err)
 	}
+	sessionCookie := session.Cookie
 
-	catalog := assertTimetrackJSON(t, http.MethodGet, server.URL+"/api/time/catalog", tokens.AccessToken, nil, http.StatusOK)
+	catalog := assertTimetrackJSON(t, http.MethodGet, server.URL+"/api/time/catalog", sessionCookie, nil, http.StatusOK)
 	assertTimetrackEmptyCatalog(t, catalog)
-	assertTimetrackEmptyListData(t, assertTimetrackJSON(t, http.MethodGet, server.URL+"/api/time/entries", tokens.AccessToken, nil, http.StatusOK))
+	assertTimetrackEmptyListData(t, assertTimetrackJSON(t, http.MethodGet, server.URL+"/api/time/entries", sessionCookie, nil, http.StatusOK))
 
-	groupID := decodeCreatedID(t, assertTimetrackJSON(t, http.MethodPost, server.URL+"/api/time/category-groups", tokens.AccessToken, map[string]any{
+	groupID := decodeCreatedID(t, assertTimetrackJSON(t, http.MethodPost, server.URL+"/api/time/category-groups", sessionCookie, map[string]any{
 		"name": "Game",
 	}, http.StatusCreated))
 
-	optionID := decodeCreatedID(t, assertTimetrackJSON(t, http.MethodPost, server.URL+"/api/time/category-options", tokens.AccessToken, map[string]any{
+	optionID := decodeCreatedID(t, assertTimetrackJSON(t, http.MethodPost, server.URL+"/api/time/category-options", sessionCookie, map[string]any{
 		"groupId": groupID,
 		"name":    "ATS",
 	}, http.StatusCreated))
 
-	kindID := decodeCreatedID(t, assertTimetrackJSON(t, http.MethodPost, server.URL+"/api/time/activity-kinds", tokens.AccessToken, map[string]any{
+	kindID := decodeCreatedID(t, assertTimetrackJSON(t, http.MethodPost, server.URL+"/api/time/activity-kinds", sessionCookie, map[string]any{
 		"name": "Game",
 		"groupBindings": []map[string]any{
 			{"groupId": groupID, "required": true},
 		},
 	}, http.StatusCreated))
 
-	assertTimetrackStatus(t, http.MethodPut, server.URL+"/api/time/activity-kinds/"+itoa(kindID), tokens.AccessToken, map[string]any{
+	assertTimetrackStatus(t, http.MethodPut, server.URL+"/api/time/activity-kinds/"+itoa(kindID), sessionCookie, map[string]any{
 		"name": "Game (updated)",
 		"groupBindings": []map[string]any{
 			{"groupId": groupID, "required": true},
 		},
 	}, http.StatusOK)
 
-	assertTimetrackStatus(t, http.MethodPut, server.URL+"/api/time/category-groups/"+itoa(groupID), tokens.AccessToken, map[string]any{
+	assertTimetrackStatus(t, http.MethodPut, server.URL+"/api/time/category-groups/"+itoa(groupID), sessionCookie, map[string]any{
 		"name": "Game updated",
 	}, http.StatusOK)
 
-	entryID := decodeCreatedID(t, assertTimetrackJSON(t, http.MethodPost, server.URL+"/api/time/entries", tokens.AccessToken, map[string]any{
+	createEntryBody := map[string]any{
+		"operationId":    "op-create",
 		"activityKindId": kindID,
 		"track":          "primary",
 		"startAt":        "2026-07-06T09:00:00Z",
@@ -72,9 +73,21 @@ func TestTimetrackRoutesCrud(t *testing.T) {
 		"options": []map[string]any{
 			{"groupId": groupID, "optionId": optionID},
 		},
-	}, http.StatusCreated))
+	}
+	entryID := decodeCreatedID(t, assertTimetrackJSON(t, http.MethodPost, server.URL+"/api/time/entries", sessionCookie, createEntryBody, http.StatusCreated))
 
-	assertTimetrackStatus(t, http.MethodPost, server.URL+"/api/time/entries", tokens.AccessToken, map[string]any{
+	// A sync-engine retry with the same operationId replays the original result instead of
+	// tripping over its own entry as an overlap.
+	replayedID := decodeCreatedID(t, assertTimetrackJSON(t, http.MethodPost, server.URL+"/api/time/entries", sessionCookie, createEntryBody, http.StatusCreated))
+	if replayedID != entryID {
+		t.Fatalf("replayed create id = %d, want %d", replayedID, entryID)
+	}
+
+	delete(createEntryBody, "operationId")
+	assertTimetrackStatus(t, http.MethodPost, server.URL+"/api/time/entries", sessionCookie, createEntryBody, http.StatusBadRequest)
+
+	assertTimetrackStatus(t, http.MethodPost, server.URL+"/api/time/entries", sessionCookie, map[string]any{
+		"operationId":    "op-overlap",
 		"activityKindId": kindID,
 		"track":          "primary",
 		"startAt":        "2026-07-06T11:00:00Z",
@@ -84,34 +97,39 @@ func TestTimetrackRoutesCrud(t *testing.T) {
 		},
 	}, http.StatusConflict)
 
-	assertTimetrackStatus(t, http.MethodGet, server.URL+"/api/time/entries?start=2026-07-01T00:00:00Z", tokens.AccessToken, nil, http.StatusOK)
+	assertTimetrackStatus(t, http.MethodGet, server.URL+"/api/time/entries?start=2026-07-01T00:00:00Z", sessionCookie, nil, http.StatusOK)
 
-	assertTimetrackStatus(t, http.MethodPatch, server.URL+"/api/time/entries/"+itoa(entryID)+"/time", tokens.AccessToken, map[string]any{
-		"track":   "primary",
-		"startAt": "2026-07-06T09:30:00Z",
-		"endAt":   "2026-07-06T12:30:00Z",
+	assertTimetrackStatus(t, http.MethodPatch, server.URL+"/api/time/entries/"+itoa(entryID)+"/time", sessionCookie, map[string]any{
+		"operationId": "op-time",
+		"track":       "primary",
+		"startAt":     "2026-07-06T09:30:00Z",
+		"endAt":       "2026-07-06T12:30:00Z",
 	}, http.StatusOK)
 
-	assertTimetrackStatus(t, http.MethodPatch, server.URL+"/api/time/entries/"+itoa(entryID)+"/selection", tokens.AccessToken, map[string]any{
+	assertTimetrackStatus(t, http.MethodPatch, server.URL+"/api/time/entries/"+itoa(entryID)+"/selection", sessionCookie, map[string]any{
+		"operationId":    "op-selection",
 		"activityKindId": kindID,
 		"options": []map[string]any{
 			{"groupId": groupID, "optionId": optionID},
 		},
 	}, http.StatusOK)
 
-	assertTimetrackStatus(t, http.MethodDelete, server.URL+"/api/time/entries/"+itoa(entryID), tokens.AccessToken, nil, http.StatusOK)
+	deleteEntryBody := map[string]any{"operationId": "op-delete"}
+	assertTimetrackStatus(t, http.MethodDelete, server.URL+"/api/time/entries/"+itoa(entryID), sessionCookie, deleteEntryBody, http.StatusOK)
+	// Retried delete of an already-deleted entry: replayed success, not 404.
+	assertTimetrackStatus(t, http.MethodDelete, server.URL+"/api/time/entries/"+itoa(entryID), sessionCookie, deleteEntryBody, http.StatusOK)
 
 	// The kind still binds the group — unbind first, same as the UI would
 	// require before letting the group/option be deleted.
-	assertTimetrackStatus(t, http.MethodPut, server.URL+"/api/time/activity-kinds/"+itoa(kindID), tokens.AccessToken, map[string]any{
+	assertTimetrackStatus(t, http.MethodPut, server.URL+"/api/time/activity-kinds/"+itoa(kindID), sessionCookie, map[string]any{
 		"name":          "Game (updated)",
 		"groupBindings": []map[string]any{},
 	}, http.StatusOK)
 
 	// CategoryOption/CategoryGroup are now referenced by nothing, so a hard
 	// delete of each must succeed.
-	assertTimetrackStatus(t, http.MethodDelete, server.URL+"/api/time/category-options/"+itoa(optionID), tokens.AccessToken, nil, http.StatusOK)
-	assertTimetrackStatus(t, http.MethodDelete, server.URL+"/api/time/category-groups/"+itoa(groupID), tokens.AccessToken, nil, http.StatusOK)
+	assertTimetrackStatus(t, http.MethodDelete, server.URL+"/api/time/category-options/"+itoa(optionID), sessionCookie, nil, http.StatusOK)
+	assertTimetrackStatus(t, http.MethodDelete, server.URL+"/api/time/category-groups/"+itoa(groupID), sessionCookie, nil, http.StatusOK)
 }
 
 // assertTimetrackEmptyCatalog catches nil-slice-marshals-to-JSON-null regressions
@@ -155,12 +173,12 @@ func itoa(id int64) string {
 	return strconv.FormatInt(id, 10)
 }
 
-func assertTimetrackStatus(t *testing.T, method string, url string, accessToken string, body any, wantStatus int) {
+func assertTimetrackStatus(t *testing.T, method string, url string, sessionCookie string, body any, wantStatus int) {
 	t.Helper()
-	assertTimetrackJSON(t, method, url, accessToken, body, wantStatus)
+	assertTimetrackJSON(t, method, url, sessionCookie, body, wantStatus)
 }
 
-func assertTimetrackJSON(t *testing.T, method string, url string, accessToken string, body any, wantStatus int) map[string]any {
+func assertTimetrackJSON(t *testing.T, method string, url string, sessionCookie string, body any, wantStatus int) map[string]any {
 	t.Helper()
 
 	var requestBody *bytes.Reader
@@ -178,7 +196,7 @@ func assertTimetrackJSON(t *testing.T, method string, url string, accessToken st
 	if err != nil {
 		t.Fatalf("http.NewRequest() error = %v", err)
 	}
-	request.Header.Set("Authorization", "Bearer "+accessToken)
+	request.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sessionCookie})
 	request.Header.Set("Content-Type", "application/json")
 
 	response, err := http.DefaultClient.Do(request)

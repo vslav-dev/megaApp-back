@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -86,17 +86,6 @@ func (s *ImageStore) SetImageVersion(catalogueID int64, version int64) {
 	s.mu.Lock()
 	s.versions[catalogueID] = version
 	s.mu.Unlock()
-}
-
-func (s *ImageStore) ExistingImageIDs() []int64 {
-	s.mu.RLock()
-	ids := make([]int64, 0, len(s.versions))
-	for id := range s.versions {
-		ids = append(ids, id)
-	}
-	s.mu.RUnlock()
-	sort.Slice(ids, func(i int, j int) bool { return ids[i] < ids[j] })
-	return ids
 }
 
 func (s *ImageStore) SaveOriginal(catalogueID int64, version int64, format string, data []byte) (string, error) {
@@ -255,7 +244,7 @@ func (s *ImageStore) CatalogueIDsWithOriginals() ([]int64, error) {
 	for id := range idsMap {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i int, j int) bool { return ids[i] < ids[j] })
+	slices.Sort(ids)
 	return ids, nil
 }
 
